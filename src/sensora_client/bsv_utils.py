@@ -59,8 +59,66 @@ def broadcast_transaction(raw_tx_hex: str) -> str | None:
     except Exception as e:
         logger.exception(f"Error broadcasting consumer TX: {e}")
         return None
-
 def create_payment_transaction(consumer_priv_key, device_payment_address, price_sats, op_return_data):
+    """Constructs the full payment transaction."""
+    consumer_pub_key = consumer_priv_key.public_key()
+    consumer_address = consumer_pub_key.address()
+    consumer_script_hex = consumer_pub_key.locking_script().hex()
+
+    estimated_fee = 250
+    sats_needed = price_sats + estimated_fee
+    utxos, total_sats = find_spendable_utxos_for_consumer(consumer_address, consumer_script_hex, [consumer_priv_key])
+    
+    if total_sats < sats_needed:
+        logger.error(f"Insufficient funds. Need ~{sats_needed} sats, have {total_sats}.")
+        return None
+
+    # Coin selection (simple)
+    utxos.sort(key=lambda u: u.satoshi)
+    selected_unspents: list[Unspent] = []
+    input_sats = 0
+    for utxo in utxos:
+        selected_unspents.append(utxo)
+        input_sats += utxo.satoshi
+        if input_sats >= sats_needed:
+            break
+
+    # --- START CORRECTION ---
+    # Manually convert Unspent objects to TxInput objects.
+    # The TxInput constructor takes an Unspent object via the 'utxo' parameter.
+    tx_inputs = [TxInput(utxo=u) for u in selected_unspents]
+    # --- END CORRECTION ---
+
+    # Create payment output
+    payment_output = TxOutput(out=device_payment_address, satoshi=price_sats)
+
+    # Create OP_RETURN output
+    try:
+        script_bytes_list = [b'\x00', b'\x6a']
+        data_len = len(op_return_data)
+        if data_len <= 75: script_bytes_list.append(bytes([data_len])) 
+        elif data_len <= 255: script_bytes_list.extend([b'\x4c', bytes([data_len])]) 
+        else:
+            logger.error("OP_RETURN data too large for this simple client.")
+            return None
+        script_bytes_list.append(op_return_data)
+        serialized_script_bytes = b''.join(script_bytes_list)
+        op_return_script = Script(serialized_script_bytes)
+    except Exception as e:
+        logger.exception(f"Failed to create OP_RETURN script: {e}")
+        return None
+    
+    op_return_output = TxOutput(out=op_return_script, satoshi=0)
+    
+    # Build transaction using the newly created TxInput list
+    tx = Transaction(tx_inputs=tx_inputs, tx_outputs=[payment_output, op_return_output], fee_rate=config.BSV_FEE_SATOSHIS_PER_BYTE_CONSUMER)
+    # The add_inputs method also expects TxInput objects, so tx_inputs is correct here if used instead of constructor
+    # tx.add_inputs(tx_inputs) 
+    tx.add_change(change_address=consumer_address)
+    tx.sign()
+    
+    logger.info(f"Payment TX constructed. Fee: {tx.fee()} sats. Change: {tx.change()} sats.")
+    return tx
     """Constructs the full payment transaction."""
     consumer_pub_key = consumer_priv_key.public_key()
     consumer_address = consumer_pub_key.address()
