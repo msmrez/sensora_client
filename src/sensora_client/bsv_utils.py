@@ -176,7 +176,13 @@ def create_payment_transaction(consumer_priv_key, device_payment_address, price_
     # tx.add_inputs(tx_inputs) 
     tx.add_change(change_address=consumer_address)
     tx.sign()
-    
+# --- START CORRECTION ---
+    final_fee = tx.fee()
+    # Manually calculate change for logging purposes
+    change_sats = sats_in_selected - price_sats - final_fee
+    logger.info(f"Payment TX constructed. Fee: {final_fee} sats. Change: {change_sats} sats.")
+    # --- END CORRECTION ---
+
     logger.info(f"Payment TX constructed. Fee: {tx.fee()} sats. Change: {tx.change()} sats.")
     return tx
     """Constructs the full payment transaction."""
