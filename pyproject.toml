@@ -1,0 +1,13 @@
+# sensora_client/pyproject.toml
+
+[project]
+name = "sensora_client"
+version = "0.1.0"
+description = "A client for discovering and purchasing data from the Sensora IoT marketplace."
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = [
+    "requests",
+    "bsvlib",
+]
