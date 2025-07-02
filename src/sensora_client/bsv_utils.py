@@ -59,8 +59,90 @@ def broadcast_transaction(raw_tx_hex: str) -> str | None:
     except Exception as e:
         logger.exception(f"Error broadcasting consumer TX: {e}")
         return None
+def create_payment_transaction(consumer_priv_key: PrivateKey, device_payment_address: str, price_sats: int, op_return_data: bytes) -> Transaction | None:
+    """Constructs the full payment transaction for the consumer."""
+    try:
+        consumer_pub_key = consumer_priv_key.public_key()
+        consumer_address = consumer_pub_key.address()
+        consumer_script_hex = consumer_pub_key.locking_script().hex()
+    except Exception as e:
+        logger.exception(f"Error deriving keys from provided WIF: {e}")
+        return None
 
-def create_payment_transaction(consumer_priv_key, device_payment_address, price_sats, op_return_data):
+    # Find UTXOs for the consumer
+    estimated_fee = 250  # A safe estimate in sats for a simple payment tx
+    sats_needed = price_sats + estimated_fee
+    utxos, total_sats = find_spendable_utxos_for_consumer(consumer_address, consumer_script_hex, [consumer_priv_key])
+    
+    if total_sats < sats_needed:
+        logger.error(f"Insufficient funds. Need ~{sats_needed} sats, have {total_sats}.")
+        return None
+
+    # Coin selection (simple greedy algorithm)
+    utxos.sort(key=lambda u: u.satoshi)
+    selected_unspents: list[Unspent] = []
+    sats_in_selected = 0
+    for utxo in utxos:
+        selected_unspents.append(utxo)
+        sats_in_selected += utxo.satoshi
+        if sats_in_selected >= sats_needed:
+            break
+    
+    # This check is important in case the loop finishes without enough sats
+    if sats_in_selected < sats_needed:
+        logger.error(f"Could not select enough UTXOs after sorting. Selected: {sats_in_selected}, Need: {sats_needed}")
+        return None
+
+    # --- Create Transaction Outputs ---
+
+    # 1. Create payment output to the sensor device
+    try:
+        payment_output = TxOutput(out=device_payment_address, satoshi=price_sats)
+    except Exception as e:
+        logger.exception(f"Failed to create P2PKH output for address {device_payment_address}: {e}")
+        return None
+
+    # 2. Create OP_RETURN output
+    try:
+        script_bytes_list = [b'\x00', b'\x6a'] # OP_FALSE OP_RETURN
+        data_len = len(op_return_data)
+        if data_len > 75: # Simple client only handles single-byte pushdata for now
+            logger.error(f"OP_RETURN data too large ({data_len} bytes) for this simple client.")
+            return None
+        script_bytes_list.append(bytes([data_len]))
+        script_bytes_list.append(op_return_data)
+        op_return_script = Script(b''.join(script_bytes_list))
+    except Exception as e:
+        logger.exception(f"Failed to create OP_RETURN script: {e}")
+        return None
+    
+    op_return_output = TxOutput(out=op_return_script, satoshi=0)
+    
+    # --- Build, Sign, and Finalize Transaction ---
+    try:
+        # Initialize transaction with outputs
+        tx = Transaction(tx_outputs=[payment_output, op_return_output], fee_rate=config.BSV_FEE_SATOSHIS_PER_BYTE_CONSUMER)
+        
+        # Use the .add_inputs() method which correctly handles Unspent objects
+        tx.add_inputs(selected_unspents)
+        
+        # Add a change output back to the consumer
+        tx.add_change(change_address=consumer_address)
+        
+        # Sign the transaction
+        tx.sign()
+        
+        # --- FINAL CORRECTED LOGGING ---
+        final_fee = tx.fee()
+        # Manually calculate change for logging, as .change() does not exist
+        change_sats = sats_in_selected - price_sats - final_fee
+        logger.info(f"Payment TX constructed. Fee: {final_fee} sats. Change: {change_sats} sats.")
+        # --- END CORRECTION ---
+
+        return tx
+    except Exception as e:
+        logger.exception(f"FATAL: Error during final transaction construction or signing: {e}")
+        return None
     """Constructs the full payment transaction."""
     consumer_pub_key = consumer_priv_key.public_key()
     consumer_address = consumer_pub_key.address()
@@ -176,7 +258,7 @@ def create_payment_transaction(consumer_priv_key, device_payment_address, price_
     # tx.add_inputs(tx_inputs) 
     tx.add_change(change_address=consumer_address)
     tx.sign()
-# --- START CORRECTION ---
+
     final_fee = tx.fee()
     # Manually calculate change for logging purposes
     change_sats = sats_in_selected - price_sats - final_fee
