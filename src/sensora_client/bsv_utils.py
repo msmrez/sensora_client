@@ -3,7 +3,7 @@
 import requests
 import json
 import logging
-import struct
+import struct # <--- ADD THIS IMPORT
 from bsvlib import PrivateKey, PublicKey, TxOutput, TxInput, Unspent, Transaction
 from bsvlib.script import Script
 from bsvlib.script.type import P2pkhScriptType
@@ -12,11 +12,8 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
-# This module contains functions specific to the consumer client's BSV operations.
-
 def find_spendable_utxos_for_consumer(address_str, locking_script_hex, private_keys):
-    # This function is largely the same as the one in the old client.py
-    # It finds UTXOs for the consumer's wallet.
+    # This function is correct.
     utxos_url = f"https://api.bitails.io/address/{address_str}/unspent"
     logger.info(f"Fetching UTXOs for consumer {address_str} from: {utxos_url}")
     try:
@@ -43,7 +40,7 @@ def find_spendable_utxos_for_consumer(address_str, locking_script_hex, private_k
         return [], 0
 
 def broadcast_transaction(raw_tx_hex: str) -> str | None:
-    # This is a generic broadcast function.
+    # This function is correct.
     broadcast_url = "https://api.bitails.io/tx/broadcast"
     headers = {"Content-Type": "application/json"}
     payload = {"raw": raw_tx_hex}
@@ -69,8 +66,7 @@ def create_payment_transaction(consumer_priv_key, device_payment_address, price_
     consumer_address = consumer_pub_key.address()
     consumer_script_hex = consumer_pub_key.locking_script().hex()
 
-    # Find UTXOs for the consumer
-    estimated_fee = 200 # A safe estimate for a simple payment tx
+    estimated_fee = 250 # A safe estimate for a simple payment tx
     sats_needed = price_sats + estimated_fee
     utxos, total_sats = find_spendable_utxos_for_consumer(consumer_address, consumer_script_hex, [consumer_priv_key])
     
@@ -91,8 +87,29 @@ def create_payment_transaction(consumer_priv_key, device_payment_address, price_
     # Create payment output
     payment_output = TxOutput(out=device_payment_address, satoshi=price_sats)
 
-    # Create OP_RETURN output
-    op_return_script = Script.op_return(op_return_data)
+    # --- START CORRECTION ---
+    # Create OP_RETURN output using manual serialization
+    try:
+        if not isinstance(op_return_data, bytes):
+            raise ValueError(f"op_return_data must be bytes, got {type(op_return_data)}")
+        
+        script_bytes_list = [b'\x00', b'\x6a']
+        data_len = len(op_return_data)
+        
+        if data_len <= 75: script_bytes_list.append(bytes([data_len])) 
+        elif data_len <= 255: script_bytes_list.extend([b'\x4c', bytes([data_len])]) 
+        else:
+            logger.error("OP_RETURN data too large for this simple client.")
+            return None
+
+        script_bytes_list.append(op_return_data)
+        serialized_script_bytes = b''.join(script_bytes_list)
+        op_return_script = Script(serialized_script_bytes)
+    except Exception as e:
+        logger.exception(f"Failed to create OP_RETURN script: {e}")
+        return None
+    # --- END CORRECTION ---
+    
     op_return_output = TxOutput(out=op_return_script, satoshi=0)
     
     # Build transaction
