@@ -7,8 +7,6 @@ import json
 import base64
 import requests
 
-# We still use the client's config for non-Bitails settings if needed in the future,
-# but the API URL will be hardcoded here to avoid confusion.
 from src.sensora_client import config
 from bsvlib import Transaction
 
@@ -16,49 +14,51 @@ from bsvlib import Transaction
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s] %(module)s.%(funcName)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def get_raw_tx_from_whatsonchain(txid: str) -> str | None:
+def get_raw_tx_hex_from_bitails(txid: str) -> str | None:
     """
-    Fetches the full, untruncated raw transaction hex from the WhatsOnChain API.
-    This is our definitive source for large transaction data.
+    Fetches the raw binary transaction from the bitails.io download endpoint
+    and converts it to a hexadecimal string.
     """
     try:
-        # This is the public, reliable endpoint for raw transaction hex data.
-        url = f"https://api.whatsonchain.com/v1/bsv/main/tx/{txid}/hex"
-        logger.info(f"Fetching full raw transaction from WhatsOnChain: {url}")
-        response = requests.get(url, timeout=45) # Allow a long timeout for large transactions
-        response.raise_for_status() # Will raise an error for 4xx/5xx status codes
+        url = f"{config.BITAILS_API_BASE_URL}/download/tx/{txid}"
+        logger.info(f"Fetching raw binary transaction from: {url}")
         
-        # WhatsOnChain returns the raw hex as plain text, not JSON
-        raw_tx_hex = response.text
-        if not raw_tx_hex or len(raw_tx_hex) < 10: # Basic sanity check
-            logger.error(f"WhatsOnChain returned an empty or invalid raw hex for {txid}")
+        # Make the request and get the raw binary content
+        response = requests.get(url, timeout=45) # Long timeout for large txs
+        response.raise_for_status()
+        binary_data = response.content
+
+        if not binary_data:
+            logger.error(f"Received empty binary data for txid {txid}")
             return None
+        
+        # Convert the binary data to a hexadecimal string, just like the JS example
+        raw_tx_hex = binary_data.hex()
         return raw_tx_hex
+
     except requests.exceptions.HTTPError as http_err:
-        logger.error(f"HTTP error fetching raw tx {txid} from WhatsOnChain: {http_err}")
+        logger.error(f"HTTP error fetching raw tx {txid} from bitails.io: {http_err}")
         return None
     except Exception as e:
-        logger.exception(f"Failed to get raw transaction {txid} from WhatsOnChain: {e}")
+        logger.exception(f"Failed to get and convert raw transaction for txid {txid}: {e}")
         return None
 
 def find_and_parse_op_return_from_txid(txid: str) -> bytes | None:
     """
-    Given a TXID, fetches the raw transaction from WhatsOnChain and parses its OP_RETURN.
+    Given a TXID, fetches the raw transaction and parses its OP_RETURN.
     """
-    raw_tx_hex = get_raw_tx_from_whatsonchain(txid)
+    raw_tx_hex = get_raw_tx_hex_from_bitails(txid)
     if not raw_tx_hex:
         return None
         
     try:
-        # Use bsvlib to parse the raw transaction hex
         tx = Transaction.from_hex(raw_tx_hex)
         for output in tx.tx_outputs:
             if output.script.is_op_return():
-                # .get_op_return() returns a list of all data pushes.
-                # The UPFILE protocol uses a single push for its manifest and for each chunk.
                 op_return_data_parts = output.script.get_op_return()
                 if op_return_data_parts and isinstance(op_return_data_parts, list):
                     return op_return_data_parts[0]
+                return op_return_data_parts
         
         logger.warning(f"No OP_RETURN output found in transaction {txid}")
         return None
