@@ -8,7 +8,9 @@ import base64
 import requests
 
 from src.sensora_client import config
-from bsvlib.transaction import Tx # Import Tx to parse raw hex
+# --- START CORRECTION: Correct the bsvlib import ---
+from bsvlib import Transaction # We only need the Transaction class
+# --- END CORRECTION ---
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -16,15 +18,15 @@ logger = logging.getLogger(__name__)
 def get_raw_transaction(txid: str) -> str | None:
     """Fetches the raw hex of a transaction."""
     try:
-        # ASSUMED ENDPOINT for raw transaction hex
         url = f"{config.BITAILS_API_BASE_URL}/tx/{txid}/raw"
         logger.info(f"Fetching raw transaction: {url}")
         response = requests.get(url, timeout=20)
         response.raise_for_status()
-        # The response might be JSON like {"rawtx": "..."} or just the raw hex text.
         try:
+            # Some APIs wrap it in JSON
             return response.json().get("rawtx")
         except json.JSONDecodeError:
+            # Others return raw text
             return response.text
     except Exception as e:
         logger.exception(f"Failed to get raw transaction for txid {txid}: {e}")
@@ -39,28 +41,16 @@ def find_and_parse_op_return_from_txid(txid: str) -> bytes | None:
         return None
         
     try:
-        # Use bsvlib to parse the raw transaction
-        tx = Tx.from_hex(raw_tx_hex)
+        # Use the Transaction class to parse the raw hex
+        tx = Transaction.from_hex(raw_tx_hex)
         for output in tx.tx_outputs:
             if output.script.is_op_return():
-                # get_op_return() is a valid method on a SCRIPT object, not the class.
+                # .get_op_return() is a valid method on a Script object instance
                 return output.script.get_op_return()
         logger.warning(f"No OP_RETURN output found in transaction {txid}")
         return None
     except Exception as e:
         logger.exception(f"Failed to parse raw transaction hex for {txid}: {e}")
-        return None
-
-def get_full_transaction_summary(txid: str) -> dict | None: # We still need this for the manifest
-    """Fetches the main transaction JSON details."""
-    try:
-        url = f"{config.BITAILS_API_BASE_URL}/tx/{txid}"
-        logger.info(f"Fetching transaction summary: {url}")
-        response = requests.get(url, timeout=20)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.exception(f"Failed to get full transaction summary for txid {txid}: {e}")
         return None
 
 def main():
@@ -70,13 +60,11 @@ def main():
 
     manifest_txid = sys.argv[1]
     
-    # 1. Fetch the manifest OP_RETURN data by getting the raw TX
     op_return_payload = find_and_parse_op_return_from_txid(manifest_txid)
     if op_return_payload is None:
         logger.error(f"Could not retrieve or parse OP_RETURN from manifest transaction {manifest_txid}.")
         sys.exit(1)
 
-    # 2. Parse the UPFILE manifest
     try:
         payload_str = op_return_payload.decode('utf-8')
         if not payload_str.startswith("upfile "):
@@ -88,7 +76,6 @@ def main():
 
     file_content_bytes = b''
     
-    # 3. Handle inlined vs. chunked data
     if "data" in manifest:
         logger.info("Found inlined Base64 data. Decoding...")
         file_content_bytes = base64.b64decode(manifest["data"])
@@ -106,14 +93,16 @@ def main():
     else:
         logger.error("Manifest is invalid: contains neither 'data' nor 'chunks' key."); sys.exit(1)
 
-    # 4. Verify and save
-    expected_size = manifest.get("size"); actual_size = len(file_content_bytes)
+    expected_size = manifest.get("size")
+    actual_size = len(file_content_bytes)
+
     if expected_size is not None and actual_size != expected_size:
         logger.warning(f"File size mismatch! Manifest: {expected_size}, Reassembled: {actual_size}.")
     else:
         logger.info(f"File size matches manifest: {actual_size} bytes.")
 
-    output_filename = os.path.basename(manifest.get("filename", "downloaded_file"))
+    output_filename = os.path.basename(manifest.get("filename", "downloaded_file")) 
+
     try:
         with open(output_filename, 'wb') as f:
             f.write(file_content_bytes)
