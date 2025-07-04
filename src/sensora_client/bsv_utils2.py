@@ -12,7 +12,7 @@ from bsvlib.script.type import P2pkhScriptType
 
 from . import config
 # This is the ONLY line that needs to be added to your original file
-from .bsv_utils import find_spendable_utxos as find_spendable_utxos_for_consumer, broadcast_transaction
+from .bsv_utils import find_spendable_utxos_for_consumer, broadcast_transaction
 
 logger = logging.getLogger(__name__)
 
