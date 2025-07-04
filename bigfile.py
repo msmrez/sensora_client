@@ -6,11 +6,12 @@ import mimetypes
 import logging
 import json
 import base64
+import threading
 
 # Import project modules
-from src.sensora_client import config, bsv_utils2
-from bsvlib import PrivateKey, TxOutput, Transaction
-from bsvlib.script import Script
+# NOTE: Assumes you have merged utils files into one bsv_utils.py
+from src.sensora_client import config, bsv_utils
+from bsvlib import PrivateKey
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -18,6 +19,75 @@ logger = logging.getLogger(__name__)
 
 # --- UPFILE Protocol Constants ---
 UPFILE_JSON_PREFIX = "upfile "
+SINGLE_TX_SIZE_LIMIT = 90 * 1024  # Files smaller than 90KB will use single tx method
+CHUNK_SIZE_BYTES = 300 * 1024 # Chunks for larger files
+
+def upload_file_as_chunks(file_content_bytes, file_name, mime_type, private_key):
+    """Handles the multi-transaction upload for large files."""
+    
+    file_chunks = [file_content_bytes[i:i + CHUNK_SIZE_BYTES] for i in range(0, len(file_content_bytes), CHUNK_SIZE_BYTES)]
+    logger.info(f"File is large. Splitting into {len(file_chunks)} chunks of max {CHUNK_SIZE_BYTES // 1024} KB.")
+    
+    chunk_txids = []
+    tx_lock = threading.Lock() # Needed for our broadcast utility
+
+    for i, chunk in enumerate(file_chunks):
+        logger.info(f"--- Uploading Chunk {i+1}/{len(file_chunks)} ---")
+        chunk_txid = bsv_utils.create_and_broadcast_op_return_tx(
+            lock=tx_lock,
+            priv_key=private_key,
+            op_return_data=chunk
+        )
+        if not chunk_txid:
+            logger.error(f"Failed to upload chunk {i+1}. Aborting upload.")
+            return None
+        
+        chunk_txids.append(chunk_txid)
+        logger.info(f"Chunk {i+1} uploaded successfully. TXID: {chunk_txid}")
+
+    # All chunks uploaded, now create the manifest
+    logger.info("All chunks uploaded. Creating final manifest...")
+    manifest = {
+        "version": 1, "filename": file_name, "mime": mime_type,
+        "size": len(file_content_bytes), "description": "Chunked upload via Sensora",
+        "chunksize": CHUNK_SIZE_BYTES, "chunks": chunk_txids
+    }
+    manifest_string = f"{UPFILE_JSON_PREFIX}{json.dumps(manifest)}"
+    manifest_bytes = manifest_string.encode('utf-8')
+
+    logger.info("--- Uploading Manifest Transaction ---")
+    manifest_txid = bsv_utils.create_and_broadcast_op_return_tx(
+        lock=tx_lock,
+        priv_key=private_key,
+        op_return_data=manifest_bytes
+    )
+    return manifest_txid
+
+def upload_file_as_single_tx(file_content_bytes, file_name, mime_type, private_key):
+    """Handles the single-transaction upload for small files."""
+    logger.info("File is small. Using single transaction method with inline Base64 data.")
+    
+    file_content_base64 = base64.b64encode(file_content_bytes).decode('ascii')
+    
+    manifest = {
+        "version": 1, "filename": file_name, "mime": mime_type,
+        "size": len(file_content_bytes), "description": "Single-TX upload via Sensora",
+        "data": file_content_base64
+    }
+    manifest_string = f"{UPFILE_JSON_PREFIX}{json.dumps(manifest)}"
+    manifest_bytes = manifest_string.encode('utf-8')
+
+    if len(manifest_bytes) >= 99500: # Final safety check
+        logger.error("Encoded manifest is too large for a single transaction. Please use a smaller file.")
+        return None
+    
+    logger.info("--- Creating and Broadcasting Manifest Transaction ---")
+    tx_lock = threading.Lock()
+    return bsv_utils.create_and_broadcast_op_return_tx(
+        lock=tx_lock,
+        priv_key=private_key,
+        op_return_data=manifest_bytes
+    )
 
 def main():
     if len(sys.argv) != 3:
@@ -28,88 +98,37 @@ def main():
     wif_string = sys.argv[2]
 
     # 1. Validate inputs and read file
-    if not os.path.exists(file_path):
-        logger.error(f"File not found at: {file_path}"); sys.exit(1)
-
+    if not os.path.exists(file_path): logger.error(f"File not found: {file_path}"); sys.exit(1)
     try:
         private_key = PrivateKey(wif_string)
-        funding_address = private_key.public_key().address()
-        funding_script_hex = private_key.public_key().locking_script().hex()
-        logger.info(f"Using wallet address: {funding_address} to fund upload.")
+        logger.info(f"Using wallet address: {private_key.public_key().address()} to fund upload.")
     except Exception as e:
         logger.error(f"Invalid WIF provided. Error: {e}"); sys.exit(1)
     
-    try:
-        with open(file_path, 'rb') as f:
-            file_content_bytes = f.read()
-        
-        file_size = len(file_content_bytes)
-        mime_type, _ = mimetypes.guess_type(file_path)
-        if not mime_type: mime_type = "application/octet-stream"
-        file_name = os.path.basename(file_path)
-
-        logger.info(f"File: '{file_name}' ({mime_type})")
-        logger.info(f"Size: {file_size / 1024:.2f} KB")
-
-    except Exception as e:
-        logger.error(f"Failed to read file: {e}"); sys.exit(1)
-
-    # 2. Base64 encode the file data
-    file_content_base64 = base64.b64encode(file_content_bytes).decode('ascii')
-
-    # 3. Create the JSON Manifest
-    manifest = {
-        "version": 1,
-        "filename": file_name,
-        "mime": mime_type,
-        "size": file_size,
-        "description": "Uploaded with Sensora bigfile tool", # Optional
-        "data": file_content_base64
-    }
+    with open(file_path, 'rb') as f:
+        file_content_bytes = f.read()
     
-    # Combine prefix and JSON string, then encode to bytes
-    final_payload_string = f"{UPFILE_JSON_PREFIX}{json.dumps(manifest)}"
-    final_payload_bytes = final_payload_string.encode('utf-8')
+    file_size = len(file_content_bytes)
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if not mime_type: mime_type = "application/octet-stream"
+    file_name = os.path.basename(file_path)
+    
+    logger.info(f"File: '{file_name}' ({mime_type}), Size: {file_size / 1024:.2f} KB")
 
-    logger.info(f"Created JSON manifest. Total payload size: {len(final_payload_bytes)} bytes.")
-    
-    # Check against a practical OP_RETURN limit
-    if len(final_payload_bytes) > 99000: # ~100KB limit
-        logger.error("File is too large to upload with this single-transaction method after Base64 encoding.")
-        logger.error("A chunked protocol would be required for this file.")
-        sys.exit(1)
-
-    # 4. Create and broadcast the transaction
-    # We need a generic OP_RETURN creation function in the client's bsv_utils.
-    # Let's borrow the one from the sensor agent.
-    
-    logger.info("--- Creating and Broadcasting Manifest Transaction ---")
-    
-    # We will use the generic OP_RETURN function we perfected for the sensor agent
-    # This requires adding it to the client's bsv_utils module.
-    # For now, let's assume it exists.
-    
-    # ACTION REQUIRED: Copy `create_and_broadcast_op_return_tx` from sensor_agent/src/bsv_utils.py
-    # to sensora_client/src/bsv_utils.py.
-    # We also need to add a lock for thread safety, even if we only use one thread here.
-    import threading
-    tx_lock = threading.Lock()
-
-    # This call assumes you've copied the function over.
-    txid = bsv_utils2.create_and_broadcast_op_return_tx(
-        lock=tx_lock,
-        priv_key=private_key, # Corrected keyword
-        op_return_data=final_payload_bytes
-    )
-    
-    if txid:
-        logger.info(f"\n--- SUCCESS ---")
-        logger.info(f"Transaction successfully broadcasted using UPFILE protocol!")
-        logger.info(f"TXID: {txid}")
-        logger.info(f"View on bitails.io: https://bitails.io/tx/{txid}")
+    # 2. Decide which upload method to use based on file size
+    if file_size > SINGLE_TX_SIZE_LIMIT:
+        final_txid = upload_file_as_chunks(file_content_bytes, file_name, mime_type, private_key)
     else:
-        logger.error(f"\n--- FAILURE ---")
-        logger.error("Transaction broadcast failed. Check the logs above.")
+        final_txid = upload_file_as_single_tx(file_content_bytes, file_name, mime_type, private_key)
+
+    # 3. Report result
+    if final_txid:
+        logger.info(f"\n--- UPLOAD COMPLETE ---")
+        logger.info(f"Final Manifest TXID: {final_txid}")
+        logger.info(f"View on bitails.io: https://bitails.io/tx/{final_txid}")
+    else:
+        logger.error(f"\n--- UPLOAD FAILED ---")
+        logger.error("File upload failed. Check logs for details.")
 
 if __name__ == "__main__":
     main()
