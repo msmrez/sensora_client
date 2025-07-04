@@ -15,21 +15,19 @@ from bsvlib.script import Script
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- B Protocol Constants ---
-B_PROTOCOL_PREFIX = "19HxigV4QyBv3tHpQVcUEQyq1pzZVdoAut"
+# --- UPFILE Protocol Constants ---
+UPFILE_PROTOCOL_PREFIX = b"UP"
 
 def create_pushdata(data: bytes) -> bytes:
     """Creates a PUSHDATA chunk for a given piece of data."""
     data_len = len(data)
-    if data_len == 0:
-        return b'\x00' # OP_0
-    elif data_len <= 75:
+    if data_len < 76: # Direct push
         return bytes([data_len]) + data
-    elif data_len <= 255:
+    elif data_len <= 255: # OP_PUSHDATA1
         return b'\x4c' + bytes([data_len]) + data
-    elif data_len <= 65535:
+    elif data_len <= 65535: # OP_PUSHDATA2
         return b'\x4d' + struct.pack('<H', data_len) + data
-    else: # PUSHDATA4 for up to 4GB
+    else: # OP_PUSHDATA4
         return b'\x4e' + struct.pack('<I', data_len) + data
 
 def main():
@@ -56,37 +54,46 @@ def main():
             file_content_bytes = f.read()
         
         file_size = len(file_content_bytes)
-        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type, encoding_guess = mimetypes.guess_type(file_path)
         if not mime_type: mime_type = "application/octet-stream"
+        
+        # Determine encoding
+        file_encoding = 'binary' # Default for non-text files
+        try:
+            # Try to decode as utf-8 to see if it's a text file
+            file_content_bytes.decode('utf-8')
+            file_encoding = encoding_guess or 'UTF-8'
+        except UnicodeDecodeError:
+            pass # It's binary
+        
         file_name = os.path.basename(file_path)
         
-        logger.info(f"File: '{file_name}' ({mime_type})")
+        logger.info(f"File: '{file_name}'")
         logger.info(f"Size: {file_size / 1024:.2f} KB")
+        logger.info(f"MIME Type: {mime_type}")
+        logger.info(f"Encoding: {file_encoding}")
 
     except Exception as e:
         logger.error(f"Failed to read file: {e}"); sys.exit(1)
 
-    # --- START CORRECTION: Manual B protocol OP_RETURN script creation ---
+    # --- UPFILE Protocol OP_RETURN Script Creation ---
     try:
-        # B protocol format: <B_PREFIX> <content> <mime_type> <encoding> <filename>
-        # We will manually construct a script with multiple data pushes.
-        script_parts = [
+        op_return_script_parts = [
             b'\x00\x6a', # OP_FALSE OP_RETURN
-            create_pushdata(B_PROTOCOL_PREFIX.encode('utf-8')),
+            create_pushdata(UPFILE_PROTOCOL_PREFIX),
             create_pushdata(file_content_bytes),
             create_pushdata(mime_type.encode('utf-8')),
-            create_pushdata(b'binary'),
+            create_pushdata(file_encoding.encode('utf-8')),
             create_pushdata(file_name.encode('utf-8'))
         ]
         
-        op_return_script_bytes = b''.join(script_parts)
+        op_return_script_bytes = b''.join(op_return_script_parts)
         op_return_script = Script(op_return_script_bytes)
-        logger.info("Successfully created B protocol OP_RETURN script.")
+        logger.info("Successfully created UPFILE protocol OP_RETURN script.")
 
     except Exception as e:
         logger.exception(f"Failed to create OP_RETURN script: {e}")
         sys.exit(1)
-    # --- END CORRECTION ---
 
     op_return_output = TxOutput(out=op_return_script, satoshi=0)
     
@@ -141,7 +148,7 @@ def main():
     
     if txid:
         logger.info(f"\n--- SUCCESS ---")
-        logger.info(f"Transaction successfully broadcasted!")
+        logger.info(f"Transaction successfully broadcasted using UPFILE protocol!")
         logger.info(f"TXID: {txid}")
         logger.info(f"View on bitails.io: https://bitails.io/tx/{txid}")
     else:
@@ -150,5 +157,4 @@ def main():
         logger.error(f"You can try to broadcast the transaction manually using the content of '{output_filename}'.")
 
 if __name__ == "__main__":
-    mimetypes.add_type("image/webp", ".webp")
     main()
