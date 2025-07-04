@@ -8,7 +8,7 @@ import json
 import base64
 
 # Import project modules
-from src.sensora_client import config, bsv_utils
+from src.sensora_client import config, bsv_utils2
 from bsvlib import PrivateKey, TxOutput, Transaction
 from bsvlib.script import Script
 
