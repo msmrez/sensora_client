@@ -98,9 +98,7 @@ def main():
     # This call assumes you've copied the function over.
     txid = bsv_utils2.create_and_broadcast_op_return_tx(
         lock=tx_lock,
-        priv_key_obj=private_key,
-        pub_key_obj=private_key.public_key(),
-        source_locking_script_hex=funding_script_hex,
+        priv_key=private_key, # Corrected keyword
         op_return_data=final_payload_bytes
     )
     
