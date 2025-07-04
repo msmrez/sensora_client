@@ -4,11 +4,12 @@ import sys
 import os
 import mimetypes
 import logging
-import struct
+import json
+import base64
 
 # Import project modules
 from src.sensora_client import config, bsv_utils
-from bsvlib import PrivateKey, TxOutput, Transaction, Unspent
+from bsvlib import PrivateKey, TxOutput, Transaction
 from bsvlib.script import Script
 
 # --- Logging Setup ---
@@ -16,19 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # --- UPFILE Protocol Constants ---
-UPFILE_PROTOCOL_PREFIX = b"UP"
-
-def create_pushdata(data: bytes) -> bytes:
-    """Creates a PUSHDATA chunk for a given piece of data."""
-    data_len = len(data)
-    if data_len < 76: # Direct push
-        return bytes([data_len]) + data
-    elif data_len <= 255: # OP_PUSHDATA1
-        return b'\x4c' + bytes([data_len]) + data
-    elif data_len <= 65535: # OP_PUSHDATA2
-        return b'\x4d' + struct.pack('<H', data_len) + data
-    else: # OP_PUSHDATA4
-        return b'\x4e' + struct.pack('<I', data_len) + data
+UPFILE_JSON_PREFIX = "upfile "
 
 def main():
     if len(sys.argv) != 3:
@@ -38,6 +27,7 @@ def main():
     file_path = sys.argv[1]
     wif_string = sys.argv[2]
 
+    # 1. Validate inputs and read file
     if not os.path.exists(file_path):
         logger.error(f"File not found at: {file_path}"); sys.exit(1)
 
@@ -45,106 +35,74 @@ def main():
         private_key = PrivateKey(wif_string)
         funding_address = private_key.public_key().address()
         funding_script_hex = private_key.public_key().locking_script().hex()
-        logger.info(f"Using wallet address: {funding_address}")
+        logger.info(f"Using wallet address: {funding_address} to fund upload.")
     except Exception as e:
         logger.error(f"Invalid WIF provided. Error: {e}"); sys.exit(1)
-
+    
     try:
         with open(file_path, 'rb') as f:
             file_content_bytes = f.read()
         
         file_size = len(file_content_bytes)
-        mime_type, encoding_guess = mimetypes.guess_type(file_path)
+        mime_type, _ = mimetypes.guess_type(file_path)
         if not mime_type: mime_type = "application/octet-stream"
-        
-        # Determine encoding
-        file_encoding = 'binary' # Default for non-text files
-        try:
-            # Try to decode as utf-8 to see if it's a text file
-            file_content_bytes.decode('utf-8')
-            file_encoding = encoding_guess or 'UTF-8'
-        except UnicodeDecodeError:
-            pass # It's binary
-        
         file_name = os.path.basename(file_path)
-        
-        logger.info(f"File: '{file_name}'")
+
+        logger.info(f"File: '{file_name}' ({mime_type})")
         logger.info(f"Size: {file_size / 1024:.2f} KB")
-        logger.info(f"MIME Type: {mime_type}")
-        logger.info(f"Encoding: {file_encoding}")
 
     except Exception as e:
         logger.error(f"Failed to read file: {e}"); sys.exit(1)
 
-    # --- UPFILE Protocol OP_RETURN Script Creation ---
-    try:
-        op_return_script_parts = [
-            b'\x00\x6a', # OP_FALSE OP_RETURN
-            create_pushdata(UPFILE_PROTOCOL_PREFIX),
-            create_pushdata(file_content_bytes),
-            create_pushdata(mime_type.encode('utf-8')),
-            create_pushdata(file_encoding.encode('utf-8')),
-            create_pushdata(file_name.encode('utf-8'))
-        ]
-        
-        op_return_script_bytes = b''.join(op_return_script_parts)
-        op_return_script = Script(op_return_script_bytes)
-        logger.info("Successfully created UPFILE protocol OP_RETURN script.")
+    # 2. Base64 encode the file data
+    file_content_base64 = base64.b64encode(file_content_bytes).decode('ascii')
 
-    except Exception as e:
-        logger.exception(f"Failed to create OP_RETURN script: {e}")
-        sys.exit(1)
-
-    op_return_output = TxOutput(out=op_return_script, satoshi=0)
+    # 3. Create the JSON Manifest
+    manifest = {
+        "version": 1,
+        "filename": file_name,
+        "mime": mime_type,
+        "size": file_size,
+        "description": "Uploaded with Sensora bigfile tool", # Optional
+        "data": file_content_base64
+    }
     
-    estimated_tx_size = 200 + len(op_return_script.hex()) // 2
-    fee_needed = int(estimated_tx_size * config.BSV_FEE_SATOSHIS_PER_BYTE_CONSUMER) or 1
-    logger.info(f"Estimated TX fee: {fee_needed} satoshis")
+    # Combine prefix and JSON string, then encode to bytes
+    final_payload_string = f"{UPFILE_JSON_PREFIX}{json.dumps(manifest)}"
+    final_payload_bytes = final_payload_string.encode('utf-8')
 
-    utxos, total_sats = bsv_utils.find_spendable_utxos_for_consumer(funding_address, funding_script_hex, [private_key])
-    if total_sats < fee_needed:
-        logger.error(f"Insufficient funds. Wallet has {total_sats} sats, but fee requires ~{fee_needed} sats.")
+    logger.info(f"Created JSON manifest. Total payload size: {len(final_payload_bytes)} bytes.")
+    
+    # Check against a practical OP_RETURN limit
+    if len(final_payload_bytes) > 99000: # ~100KB limit
+        logger.error("File is too large to upload with this single-transaction method after Base64 encoding.")
+        logger.error("A chunked protocol would be required for this file.")
         sys.exit(1)
 
-    utxos.sort(key=lambda u: u.satoshi, reverse=True)
-    selected_utxos = []
-    sats_in_selected = 0
-    for utxo in utxos:
-        selected_utxos.append(utxo)
-        sats_in_selected += utxo.satoshi
-        if sats_in_selected >= fee_needed:
-            break
-            
-    if sats_in_selected < fee_needed:
-        logger.error("Could not select enough UTXOs to cover the fee.")
-        sys.exit(1)
+    # 4. Create and broadcast the transaction
+    # We need a generic OP_RETURN creation function in the client's bsv_utils.
+    # Let's borrow the one from the sensor agent.
+    
+    logger.info("--- Creating and Broadcasting Manifest Transaction ---")
+    
+    # We will use the generic OP_RETURN function we perfected for the sensor agent
+    # This requires adding it to the client's bsv_utils module.
+    # For now, let's assume it exists.
+    
+    # ACTION REQUIRED: Copy `create_and_broadcast_op_return_tx` from sensor_agent/src/bsv_utils.py
+    # to sensora_client/src/bsv_utils.py.
+    # We also need to add a lock for thread safety, even if we only use one thread here.
+    import threading
+    tx_lock = threading.Lock()
 
-    try:
-        tx = Transaction(tx_outputs=[op_return_output], fee_rate=config.BSV_FEE_SATOSHIS_PER_BYTE_CONSUMER)
-        tx.add_inputs(selected_utxos)
-        tx.add_change(change_address=funding_address)
-        tx.sign()
-        
-        raw_tx_hex = tx.raw()
-        final_fee = tx.fee()
-        logger.info(f"Transaction constructed successfully!")
-        logger.info(f"  Final TX Size: {len(raw_tx_hex) / 2 / 1024:.2f} KB")
-        logger.info(f"  Final Fee: {final_fee} satoshis")
-
-    except Exception as e:
-        logger.exception(f"Error creating or signing the transaction: {e}")
-        sys.exit(1)
-        
-    output_filename = "raw_tx_for_bigfile.txt"
-    try:
-        with open(output_filename, 'w') as f:
-            f.write(raw_tx_hex)
-        logger.info(f"Raw transaction hex saved to '{output_filename}'")
-    except Exception as e:
-        logger.error(f"Could not save raw tx to file: {e}")
-
-    logger.info("Attempting to broadcast the transaction...")
-    txid = bsv_utils.broadcast_transaction(raw_tx_hex)
+    # This call assumes you've copied the function over.
+    txid = bsv_utils.create_and_broadcast_op_return_tx(
+        lock=tx_lock,
+        priv_key_obj=private_key,
+        pub_key_obj=private_key.public_key(),
+        source_locking_script_hex=funding_script_hex,
+        op_return_data=final_payload_bytes
+    )
     
     if txid:
         logger.info(f"\n--- SUCCESS ---")
@@ -154,7 +112,6 @@ def main():
     else:
         logger.error(f"\n--- FAILURE ---")
         logger.error("Transaction broadcast failed. Check the logs above.")
-        logger.error(f"You can try to broadcast the transaction manually using the content of '{output_filename}'.")
 
 if __name__ == "__main__":
     main()
