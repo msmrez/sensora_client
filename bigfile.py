@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # --- UPFILE Protocol Constants ---
 UPFILE_JSON_PREFIX = "upfile "
-SINGLE_TX_SIZE_LIMIT = 900 * 1024
+SINGLE_TX_SIZE_LIMIT = 90000000 * 1024
 CHUNK_SIZE_BYTES = 2000 * 1024
 
 def upload_file_as_chunks(file_content_bytes, file_name, mime_type, private_key):
