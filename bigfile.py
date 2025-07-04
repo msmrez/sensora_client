@@ -9,8 +9,11 @@ import base64
 import threading
 
 # Import project modules
-# NOTE: Assumes you have merged utils files into one bsv_utils.py
-from src.sensora_client import config, bsv_utils
+from src.sensora_client import config
+# --- START CORRECTION: Import from the correct utility file ---
+from src.sensora_client import bsv_utils2
+# --- END CORRECTION ---
+
 from bsvlib import PrivateKey
 
 # --- Logging Setup ---
@@ -19,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 # --- UPFILE Protocol Constants ---
 UPFILE_JSON_PREFIX = "upfile "
-SINGLE_TX_SIZE_LIMIT = 90 * 1024  # Files smaller than 90KB will use single tx method
-CHUNK_SIZE_BYTES = 300 * 1024 # Chunks for larger files
+SINGLE_TX_SIZE_LIMIT = 90 * 1024
+CHUNK_SIZE_BYTES = 300 * 1024
 
 def upload_file_as_chunks(file_content_bytes, file_name, mime_type, private_key):
     """Handles the multi-transaction upload for large files."""
@@ -29,15 +32,19 @@ def upload_file_as_chunks(file_content_bytes, file_name, mime_type, private_key)
     logger.info(f"File is large. Splitting into {len(file_chunks)} chunks of max {CHUNK_SIZE_BYTES // 1024} KB.")
     
     chunk_txids = []
-    tx_lock = threading.Lock() # Needed for our broadcast utility
+    tx_lock = threading.Lock()
 
     for i, chunk in enumerate(file_chunks):
         logger.info(f"--- Uploading Chunk {i+1}/{len(file_chunks)} ---")
-        chunk_txid = bsv_utils.create_and_broadcast_op_return_tx(
+        
+        # --- START CORRECTION: Call the function from the correct module ---
+        chunk_txid = bsv_utils2.create_and_broadcast_op_return_tx(
             lock=tx_lock,
             priv_key=private_key,
             op_return_data=chunk
         )
+        # --- END CORRECTION ---
+
         if not chunk_txid:
             logger.error(f"Failed to upload chunk {i+1}. Aborting upload.")
             return None
@@ -45,7 +52,6 @@ def upload_file_as_chunks(file_content_bytes, file_name, mime_type, private_key)
         chunk_txids.append(chunk_txid)
         logger.info(f"Chunk {i+1} uploaded successfully. TXID: {chunk_txid}")
 
-    # All chunks uploaded, now create the manifest
     logger.info("All chunks uploaded. Creating final manifest...")
     manifest = {
         "version": 1, "filename": file_name, "mime": mime_type,
@@ -56,7 +62,7 @@ def upload_file_as_chunks(file_content_bytes, file_name, mime_type, private_key)
     manifest_bytes = manifest_string.encode('utf-8')
 
     logger.info("--- Uploading Manifest Transaction ---")
-    manifest_txid = bsv_utils.create_and_broadcast_op_return_tx(
+    manifest_txid = bsv_utils2.create_and_broadcast_op_return_tx(
         lock=tx_lock,
         priv_key=private_key,
         op_return_data=manifest_bytes
@@ -77,17 +83,20 @@ def upload_file_as_single_tx(file_content_bytes, file_name, mime_type, private_k
     manifest_string = f"{UPFILE_JSON_PREFIX}{json.dumps(manifest)}"
     manifest_bytes = manifest_string.encode('utf-8')
 
-    if len(manifest_bytes) >= 99500: # Final safety check
-        logger.error("Encoded manifest is too large for a single transaction. Please use a smaller file.")
+    if len(manifest_bytes) >= 99500:
+        logger.error("Encoded manifest is too large for a single transaction.")
         return None
     
     logger.info("--- Creating and Broadcasting Manifest Transaction ---")
     tx_lock = threading.Lock()
-    return bsv_utils.create_and_broadcast_op_return_tx(
+    
+    # --- START CORRECTION: Call the function from the correct module ---
+    return bsv_utils2.create_and_broadcast_op_return_tx(
         lock=tx_lock,
         priv_key=private_key,
         op_return_data=manifest_bytes
     )
+    # --- END CORRECTION ---
 
 def main():
     if len(sys.argv) != 3:
@@ -97,7 +106,6 @@ def main():
     file_path = sys.argv[1]
     wif_string = sys.argv[2]
 
-    # 1. Validate inputs and read file
     if not os.path.exists(file_path): logger.error(f"File not found: {file_path}"); sys.exit(1)
     try:
         private_key = PrivateKey(wif_string)
@@ -115,20 +123,17 @@ def main():
     
     logger.info(f"File: '{file_name}' ({mime_type}), Size: {file_size / 1024:.2f} KB")
 
-    # 2. Decide which upload method to use based on file size
     if file_size > SINGLE_TX_SIZE_LIMIT:
         final_txid = upload_file_as_chunks(file_content_bytes, file_name, mime_type, private_key)
     else:
         final_txid = upload_file_as_single_tx(file_content_bytes, file_name, mime_type, private_key)
 
-    # 3. Report result
     if final_txid:
         logger.info(f"\n--- UPLOAD COMPLETE ---")
         logger.info(f"Final Manifest TXID: {final_txid}")
         logger.info(f"View on bitails.io: https://bitails.io/tx/{final_txid}")
     else:
         logger.error(f"\n--- UPLOAD FAILED ---")
-        logger.error("File upload failed. Check logs for details.")
 
 if __name__ == "__main__":
     main()
