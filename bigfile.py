@@ -96,7 +96,7 @@ def main():
     tx_lock = threading.Lock()
 
     # This call assumes you've copied the function over.
-    txid = bsv_utils.create_and_broadcast_op_return_tx(
+    txid = bsv_utils2.create_and_broadcast_op_return_tx(
         lock=tx_lock,
         priv_key_obj=private_key,
         pub_key_obj=private_key.public_key(),
