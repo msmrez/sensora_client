@@ -20,7 +20,7 @@ def get_raw_tx_hex_from_bitails(txid: str) -> str | None:
     and converts it to a hexadecimal string.
     """
     try:
-        url = f"{config.BITAILS_API_BASE_URL}/download/tx/{txid}"
+        url = f"https://api.bitails.io/download/tx/{txid}"
         logger.info(f"Fetching raw binary transaction from: {url}")
         
         response = requests.get(url, timeout=45)
@@ -52,11 +52,13 @@ def find_and_parse_op_return_from_txid(txid: str) -> bytes | None:
     try:
         tx = Transaction.from_hex(raw_tx_hex)
         for output in tx.tx_outputs:
-            # --- START CORRECTION ---
-            # The script object is stored in the 'locking_script' attribute, not 'script'.
-            if output.locking_script.is_op_return():
+            # --- START FINAL CORRECTION ---
+            # Manually check if the script is an OP_RETURN by looking at its first bytes.
+            # '006a' is OP_FALSE OP_RETURN. '6a' is OP_RETURN.
+            script_hex = output.locking_script.hex()
+            if script_hex.startswith('006a') or script_hex.startswith('6a'):
                 op_return_data_parts = output.locking_script.get_op_return()
-            # --- END CORRECTION ---
+            # --- END FINAL CORRECTION ---
                 if op_return_data_parts and isinstance(op_return_data_parts, list):
                     return op_return_data_parts[0]
                 return op_return_data_parts
