@@ -23,8 +23,7 @@ def get_raw_tx_hex_from_bitails(txid: str) -> str | None:
         url = f"{config.BITAILS_API_BASE_URL}/download/tx/{txid}"
         logger.info(f"Fetching raw binary transaction from: {url}")
         
-        # Make the request and get the raw binary content
-        response = requests.get(url, timeout=45) # Long timeout for large txs
+        response = requests.get(url, timeout=45)
         response.raise_for_status()
         binary_data = response.content
 
@@ -32,7 +31,6 @@ def get_raw_tx_hex_from_bitails(txid: str) -> str | None:
             logger.error(f"Received empty binary data for txid {txid}")
             return None
         
-        # Convert the binary data to a hexadecimal string, just like the JS example
         raw_tx_hex = binary_data.hex()
         return raw_tx_hex
 
@@ -54,8 +52,11 @@ def find_and_parse_op_return_from_txid(txid: str) -> bytes | None:
     try:
         tx = Transaction.from_hex(raw_tx_hex)
         for output in tx.tx_outputs:
-            if output.script.is_op_return():
-                op_return_data_parts = output.script.get_op_return()
+            # --- START CORRECTION ---
+            # The script object is stored in the 'locking_script' attribute, not 'script'.
+            if output.locking_script.is_op_return():
+                op_return_data_parts = output.locking_script.get_op_return()
+            # --- END CORRECTION ---
                 if op_return_data_parts and isinstance(op_return_data_parts, list):
                     return op_return_data_parts[0]
                 return op_return_data_parts
@@ -91,7 +92,6 @@ def main():
 
     file_content_bytes = b''
     
-    # Handle inlined vs. chunked data
     if "data" in manifest:
         logger.info("Manifest contains inlined Base64 data. Decoding...")
         try:
@@ -116,7 +116,6 @@ def main():
     else:
         logger.error("Manifest is invalid: contains neither 'data' nor 'chunks' key."); sys.exit(1)
 
-    # Verify file size and save to disk
     expected_size = manifest.get("size")
     actual_size = len(file_content_bytes)
 
