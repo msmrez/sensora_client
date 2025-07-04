@@ -6,6 +6,7 @@ import logging
 import json
 import base64
 import requests
+import struct
 
 # Assuming this script is in the root of sensora_client project
 from src.sensora_client import config
@@ -14,22 +15,60 @@ from src.sensora_client import config
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# --- START CORRECTION: Use the correct, manual OP_RETURN parser ---
+def parse_op_return_from_script_hex(script_hex: str) -> bytes | None:
+    """
+    Parses data from a full OP_RETURN script hex by manually handling pushdata opcodes.
+    """
+    try:
+        if script_hex.startswith("006a"): # OP_FALSE OP_RETURN
+            script_bytes = bytes.fromhex(script_hex[4:])
+        elif script_hex.startswith("6a"): # OP_RETURN
+            script_bytes = bytes.fromhex(script_hex[2:])
+        else:
+            return None
+
+        if not script_bytes:
+            return b''
+
+        opcode = script_bytes[0]
+        if 0x01 <= opcode <= 0x4b: # Direct push of 1-75 bytes
+            length_to_read = opcode
+            if len(script_bytes) < 1 + length_to_read: return None
+            return script_bytes[1 : 1 + length_to_read]
+        elif opcode == 0x4c: # OP_PUSHDATA1
+            if len(script_bytes) < 2: return None
+            length_to_read = script_bytes[1]
+            if len(script_bytes) < 2 + length_to_read: return None
+            return script_bytes[2 : 2 + length_to_read]
+        elif opcode == 0x4d: # OP_PUSHDATA2
+            if len(script_bytes) < 3: return None
+            length_to_read = int.from_bytes(script_bytes[1:3], 'little')
+            if len(script_bytes) < 3 + length_to_read: return None
+            return script_bytes[3 : 3 + length_to_read]
+        elif opcode == 0x4e: # OP_PUSHDATA4
+            if len(script_bytes) < 5: return None
+            length_to_read = int.from_bytes(script_bytes[1:5], 'little')
+            if len(script_bytes) < 5 + length_to_read: return None
+            return script_bytes[5 : 5 + length_to_read]
+        else:
+            return None
+    except Exception as e:
+        logger.exception(f"Error manually parsing OP_RETURN hex '{script_hex[:20]}...': {e}")
+        return None
+
 def parse_op_return_from_full_tx(tx_data: dict) -> bytes | None:
     """Finds and parses the first OP_RETURN data from a full transaction object."""
     outputs = tx_data.get('outputs', [])
     for output in outputs:
         script_hex = output.get('script')
-        if script_hex and (script_hex.startswith("006a") or script_hex.startswith("6a")):
-            # This is a basic parser. A more robust one would handle pushdata opcodes.
-            # For now, let's assume bitcoind-style where data follows the opcode.
-            try:
-                # A simple way to get all data pushed after OP_RETURN/OP_FALSE OP_RETURN
-                from bsvlib.script import Script
-                return Script(bytes.fromhex(script_hex)).get_op_return()
-            except Exception as e:
-                logger.error(f"Could not parse OP_RETURN script {script_hex[:30]}...: {e}")
-                return None
+        if script_hex:
+            # Use the corrected manual parser
+            op_return_payload = parse_op_return_from_script_hex(script_hex)
+            if op_return_payload is not None:
+                return op_return_payload
     return None
+# --- END CORRECTION ---
 
 def get_full_transaction(txid: str) -> dict | None:
     """Fetches full transaction details from bitails.io."""
@@ -58,7 +97,7 @@ def main():
 
     # 2. Find and parse the UPFILE manifest from the OP_RETURN
     op_return_payload = parse_op_return_from_full_tx(manifest_tx_data)
-    if not op_return_payload:
+    if op_return_payload is None:
         logger.error("No OP_RETURN found in the manifest transaction.")
         sys.exit(1)
 
@@ -79,7 +118,6 @@ def main():
     
     # 3. Check if data is inlined (small files) or chunked (large files)
     if "data" in manifest:
-        # --- Handle Inlined Base64 Data ---
         logger.info("Found inlined Base64 data. Decoding...")
         try:
             file_content_bytes = base64.b64decode(manifest["data"])
@@ -88,7 +126,6 @@ def main():
             sys.exit(1)
 
     elif "chunks" in manifest:
-        # --- Handle Chunked Data ---
         chunk_txids = manifest.get("chunks", [])
         total_chunks = len(chunk_txids)
         logger.info(f"Found {total_chunks} data chunks. Reassembling file...")
@@ -124,7 +161,6 @@ def main():
         logger.info(f"File size matches manifest: {actual_size} bytes.")
 
     output_filename = manifest.get("filename", "downloaded_file")
-    # Sanitize filename to prevent directory traversal
     output_filename = os.path.basename(output_filename) 
 
     try:
