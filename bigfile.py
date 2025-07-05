@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 BITAILS_API_BASE_URL = "https://api.bitails.io"
-BSV_FEE_RATE_SATS_PER_BYTE = 0.1
+BSV_FEE_RATE_SATS_PER_BYTE = 0.001
 # Files larger than this will be rejected by this script, as they won't fit in one transaction.
 FILE_SIZE_LIMIT = 9800000 * 1024 # 98KB is a safe limit for a single OP_RETURN
 
