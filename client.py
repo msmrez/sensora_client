@@ -39,53 +39,45 @@ def discover_sensor(data_type: int = 1):
         return None
 
 def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKey):
-    """Handles the entire purchase flow for a given reading."""
+    # ... (code to get sensor info and broadcast the payment) ...
     
-    # 1. Get required info from sensor profile
-    sensor_ipv6 = sensor.get('ipv6_address')
-    sensor_port = sensor.get('port')
-    # This requires the sensor API to provide its payment address. Let's assume it does.
-    # For now, we will fetch it from the /price endpoint.
-    
-    sensor_api_base = f"http://[{sensor_ipv6}]:{sensor_port}"
-    
-    # Get price and payment address
-    try:
-        price_response = requests.get(f"{sensor_api_base}/price", timeout=5).json()
-        device_payment_address = price_response['payment_address']
-        price_sats = price_response['price_sats']
-    except Exception as e:
-        logger.error(f"Failed to get price from sensor {sensor_ipv6}: {e}")
-        return
-        
-    # 2. Construct and broadcast payment
-    op_return_data = f"SENSORA_PAY:{reading_id}".encode('utf-8')
-    payment_tx = bsv_utils.create_payment_transaction(consumer_priv_key, device_payment_address, price_sats, op_return_data)
-    
-    if not payment_tx:
-        logger.error("Failed to create payment transaction.")
-        return
-        
-    payment_txid = bsv_utils.broadcast_transaction(payment_tx.raw())
-    if not payment_txid:
-        logger.error("Failed to broadcast payment transaction.")
-        return
-        
     logger.info(f"Payment broadcasted: {payment_txid}. Waiting a few seconds to claim...")
     time.sleep(10)
     
-    # 3. Claim token
+    # 3. Claim token - with NEW, ROBUST error handling
     try:
         claim_url = f"{sensor_api_base}/claim_reading/{reading_id}"
         claim_payload = {"payment_txid": payment_txid}
-        claim_response = requests.post(claim_url, json=claim_payload, timeout=10).json()
+        
+        # Make the request and immediately check the HTTP status code
+        response = requests.post(claim_url, json=claim_payload, timeout=10)
+        response.raise_for_status() # This will raise an exception for errors (4xx or 5xx)
+
+        # If we get here, the request was successful (2xx status code). Now we can parse the JSON.
+        claim_response = response.json()
+        
+        # Defensive check for the key before accessing it
+        if 'access_token' not in claim_response:
+            logger.error("Claim successful, but agent's response is missing 'access_token'.")
+            logger.error(f"Agent Response: {claim_response}")
+            return
+            
         access_token = claim_response['access_token']
         data_endpoint = claim_response['data_endpoint']
         logger.info(f"Token claimed successfully: {access_token[:8]}...")
-    except Exception as e:
-        logger.exception(f"Failed to claim token: {e}")
+
+    except requests.exceptions.HTTPError as e:
+        # This block will now catch errors like 402 Payment Required, 404 Not Found, etc.
+        logger.error(f"Failed to claim token. Agent responded with error: {e.response.status_code} {e.response.reason}")
+        try:
+            # Try to print the JSON error message from the agent
+            logger.error(f"  Agent's Message: {e.response.json()}")
+        except json.JSONDecodeError:
+            logger.error(f"  Agent's Response (non-JSON): {e.response.text}")
         return
-        
+    except Exception as e:
+        logger.exception(f"An unexpected error occurred while claiming the token: {e}")
+        return
     # 4. Fetch data with token
     try:
         fetch_url = f"{sensor_api_base}{data_endpoint}?token={access_token}"
