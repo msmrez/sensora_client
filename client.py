@@ -151,60 +151,169 @@ def verify_data_integrity(purchased_data: dict, proof_txid: str) -> bool:
         logger.error("🚨 FAILURE: Data tampering detected! Hashes DO NOT match.")
         return False
 
+# This is the full batch purchase function we designed earlier.
+def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: PrivateKey):
+    """
+    Handles the entire batch purchase flow: get price, confirm, pay, claim, fetch, and verify.
+    """
+    sensor_ipv6 = sensor.get('ipv6_address')
+    sensor_port = sensor.get('port')
+    sensor_api_base = f"http://[{sensor_ipv6}]:{sensor_port}"
+
+    # 1. Get Price Quote from Agent
+    logger.info(f"Requesting batch price quote from agent {sensor_ipv6}:{sensor_port}...")
+    try:
+        price_url = f"{sensor_api_base}/batch/price"
+        price_payload = {"start_timestamp": start_ts, "end_timestamp": end_ts}
+        response = requests.post(price_url, json=price_payload, timeout=10)
+
+        if response.status_code == 413: # Handle batch size limit error
+            error_data = response.json()
+            logger.error("Request Failed: The agent rejected the request as too large.")
+            logger.error(f"  Agent's Limit: {error_data.get('limit')} readings")
+            logger.error(f"  You Requested: {error_data.get('requested')} readings")
+            logger.error("Please try again with a shorter time range.")
+            return
+
+        if response.status_code == 404:
+            logger.warning("Agent reported no readings found in the specified time range.")
+            return
+
+        response.raise_for_status()
+        quote = response.json()
+        logger.info(f"Agent Quote Received: {quote['num_readings']} readings for {quote['total_price_sats']} sats.")
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"Failed to get batch price. Server responded with error: {e.response.status_code} {e.response.reason}")
+        return
+    except Exception as e:
+        logger.exception(f"An error occurred while getting the batch price: {e}")
+        return
+
+    # 2. Get User Confirmation
+    try:
+        confirm = input(f"Proceed with payment of {quote['total_price_sats']} satoshis? [y/N]: ")
+        if confirm.lower() != 'y':
+            logger.info("Purchase cancelled by user.")
+            return
+    except KeyboardInterrupt:
+        logger.info("\nPurchase cancelled by user.")
+        return
+
+    # 3. Construct and Broadcast Payment
+    batch_id = quote['batch_id']
+    payment_address = quote['payment_address']
+    total_price = quote['total_price_sats']
+    
+    op_return_data = f"SENSORA_PAY:{batch_id}".encode('utf-8')
+    payment_tx = bsv_utils.create_payment_transaction(consumer_priv_key, payment_address, total_price, op_return_data)
+    if not payment_tx: return
+
+    payment_txid = bsv_utils.broadcast_transaction(payment_tx.raw())
+    if not payment_txid: return
+    
+    logger.info(f"Payment broadcasted: {payment_txid}. Waiting for propagation...")
+    time.sleep(10)
+
+    # 4. Claim Batch and Fetch Data
+    try:
+        claim_url = f"{sensor_api_base}/batch/claim"
+        claim_payload = {"batch_id": batch_id, "payment_txid": payment_txid}
+        claim_response = requests.post(claim_url, json=claim_payload, timeout=10).json()
+        access_token = claim_response['access_token']
+        data_endpoint = claim_response['data_endpoint']
+        logger.info("Batch claim successful. Fetching data...")
+
+        fetch_url = f"{sensor_api_base}{data_endpoint}?token={access_token}"
+        data_response = requests.get(fetch_url, timeout=30)
+        data_response.raise_for_status()
+        batch_data = data_response.json()
+        
+        logger.info(f"Successfully downloaded batch of {len(batch_data)} readings.")
+
+    except Exception as e:
+        logger.exception(f"Failed to claim or fetch batch data: {e}")
+        return
+    
+    # 5. Verify Each Reading in the Batch
+    logger.info("--- Starting Verification of Batch Data ---")
+    all_verified = True
+    for i, reading in enumerate(batch_data, 1):
+        proof_txid = reading.get('onchain_proof_txid')
+        logger.info(f"Verifying reading #{i} of {len(batch_data)} (Timestamp: {reading['timestamp']})")
+        if proof_txid:
+            if not verify_data_integrity(reading, proof_txid):
+                all_verified = False
+        else:
+            logger.warning(f"  - Reading {reading['timestamp']} is missing a proof TXID. Cannot verify.")
+            all_verified = False
+    
+    logger.info("--- Verification Complete ---")
+    if all_verified:
+        logger.info("✅ SUCCESS: All readings in the batch have been cryptographically verified!")
+    else:
+        logger.error("🚨 WARNING: One or more readings in the batch failed verification.")
 
 
+
+# --- NEW MAIN FUNCTION ---
 def main():
-    # 1. Set up the argument parser
     parser = argparse.ArgumentParser(description="A smart client to purchase data from the Sensōra Network.")
     parser.add_argument("wif", help="The WIF (Wallet Import Format) private key of the consumer.")
     parser.add_argument("--type", type=int, default=1, help="The data type code to purchase (default: 1 for Temp/Humid).")
     
+    # Add a mutually exclusive group for single vs. batch purchase
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--latest", action="store_true", help="Purchase the single latest reading (default behavior).")
+    group.add_argument("--batch", action="store_true", help="Purchase a batch of historical readings.")
+
+    parser.add_argument("--start", help="Start date for batch purchase (YYYY-MM-DD). Required with --batch.")
+    parser.add_argument("--end", help="End date for batch purchase (YYYY-MM-DD). Required with --batch.")
+
     args = parser.parse_args()
-    
-    # 2. Load the wallet
+
+    # Validate arguments
+    if args.batch and (not args.start or not args.end):
+        parser.error("--start and --end are required when using --batch.")
+
+    # Load the wallet
     try:
         consumer_priv_key = PrivateKey(args.wif)
         logger.info(f"Consumer wallet loaded: {consumer_priv_key.public_key().address()}")
-    except Exception as e:
-        logger.error(f"Invalid consumer WIF provided: {e}")
+    except Exception:
+        logger.exception("Invalid consumer WIF provided.")
         sys.exit(1)
 
-    # 3. Discover the best sensor for the requested data type
+    # Discover the best sensor
     logger.info(f"Searching for the best sensor offering data type '{args.type}'...")
-    sensor_to_buy_from = discover_sensor(data_type=args.type)
-    
-    if not sensor_to_buy_from:
+    sensor = discover_sensor(data_type=args.type)
+    if not sensor:
         logger.error("Could not find a suitable sensor. Exiting.")
         sys.exit(1)
-        
-    # 4. Get the latest reading ID and display info for confirmation
-    try:
-        sensor_ip = sensor_to_buy_from['ipv6_address']
-        sensor_port = sensor_to_buy_from['port']
-        price_url = f"http://[{sensor_ip}]:{sensor_port}/price"
-        
-        price_info = requests.get(price_url, timeout=5).json()
-        reading_id_to_buy = price_info['current_reading_id']
-        price_sats = price_info['price_sats']
-        
-        logger.info(f"Sensor selected: {sensor_ip}:{sensor_port}")
-        logger.info(f"    Reputation: Uptime {sensor_to_buy_from['uptime_percentage']:.2f}%, Stamping {sensor_to_buy_from['stamp_success_rate']:.2f}%")
-        logger.info(f"    Price: {price_sats} sats")
-        logger.info(f"    Reading ID: {reading_id_to_buy}")
 
-        # 5. Ask for user confirmation before spending funds
-        confirm = input("Proceed with purchase? [y/N]: ")
-        if confirm.lower() != 'y':
-            logger.info("Purchase cancelled by user.")
-            sys.exit(0)
-
-    except Exception as e:
-        logger.error(f"Could not get purchase details from the selected sensor: {e}")
-        sys.exit(1)
-        
-    # 6. Proceed with the purchase
-    purchase_reading(sensor_to_buy_from, reading_id_to_buy, consumer_priv_key)
-
+    # --- Decide which purchase flow to execute ---
+    if args.batch:
+        logger.info("--- Initiating Batch Purchase Flow ---")
+        try:
+            # Convert string dates to Unix timestamps
+            start_ts = int(datetime.datetime.strptime(args.start, "%Y-%m-%d").timestamp())
+            end_ts = int(datetime.datetime.strptime(args.end, "%Y-%m-%d").timestamp())
+            purchase_batch(sensor, start_ts, end_ts, consumer_priv_key)
+        except ValueError:
+            logger.error("Invalid date format. Please use YYYY-MM-DD.")
+            sys.exit(1)
+    else:
+        logger.info("--- Initiating Single Reading Purchase Flow ---")
+        try:
+            # Get the latest reading ID from the discovered sensor's /price endpoint
+            price_url = f"http://[{sensor['ipv6_address']}]:{sensor['port']}/price"
+            reading_id_to_buy = requests.get(price_url, timeout=5).json()['current_reading_id']
+            logger.info(f"Found latest reading ID to purchase: {reading_id_to_buy}")
+            # The purchase_reading function already has a confirmation step
+            purchase_reading(sensor, reading_id_to_buy, consumer_priv_key)
+        except Exception as e:
+            logger.error(f"Could not get latest reading ID from discovered sensor: {e}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
