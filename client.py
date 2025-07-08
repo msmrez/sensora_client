@@ -5,6 +5,8 @@ import time
 import sys
 import json
 import logging
+import hashlib
+
 
 from src.sensora_client import config, bsv_utils
 from bsvlib import PrivateKey
