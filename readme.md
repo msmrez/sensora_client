@@ -31,18 +31,18 @@ The `client.py` script automates the following steps:
 3.  **Payment:** It constructs and broadcasts a BSV micropayment transaction directly to the Agent's specified payment address.
 4.  **Claim Data:** It contacts the Agent again, presenting the `txid` of the payment transaction to prove it has paid.
 5.  **Fetch Data:** The Agent verifies the payment on-chain and returns a single-use access token. The client uses this token to download the raw sensor data.
-6.  **Verification:** The client fetches the original `SENSORA` data stamp from the blockchain, hashes the downloaded data, and compares the hashes to cryptographically verify the data's integrity.
+6.  **Verification:** The client fetches the original `SENSORA_PROOF` data stamp from the blockchain, hashes the downloaded data, and compares the hashes to cryptographically verify the data's integrity.
 
 ## On-Chain Protocol
 
-To perform the final verification step, the client must be able to parse the `SENSORA` data stamp protocol.
+To perform the final verification step, the client must be able to parse the `SENSORA_PROOF` data stamp protocol.
 
-- **Prefix:** `SENSORA` (ASCII)
+- **Prefix:** `SENSORA_PROOF` (ASCII)
 - **Payload Structure:**
 
 | Field          | Size (Bytes) | Data Type               | Description                   |
 | :------------- | :----------- | :---------------------- | :---------------------------- |
-| Prefix         | **7**        | ASCII                   | `SENSORA`                     |
+| Prefix         | **13**        | ASCII                   | `SENSORA_PROOF`                     |
 | Version        | 1            | Unsigned Byte           | Protocol version (`0x01`)     |
 | Device ID Type | 1            | Unsigned Byte           | `0x01` for Full IPv6          |
 | Device ID      | 16           | Bytes                   | The sensor's IPv6 address     |
