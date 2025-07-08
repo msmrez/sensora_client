@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 def discover_sensor(data_type: int = 1):
     """Finds a sensor using the Registry API."""
     try:
-        search_url = f"{config.REGISTRY_API_URL}/api/v1/sensors/search?data_type={data_type}&sort=reputation"        logger.info(f"Discovering sensors from registry: {search_url}")
+        search_url = f"{config.REGISTRY_API_URL}/api/v1/sensors/search?data_type={data_type}&sort=reputation"        
+        logger.info(f"Discovering sensors from registry: {search_url}")
         response = requests.get(search_url, timeout=10)
         response.raise_for_status()
         sensors = response.json()
@@ -204,6 +205,6 @@ def main():
     # 6. Proceed with the purchase
     purchase_reading(sensor_to_buy_from, reading_id_to_buy, consumer_priv_key)
 
-    
+
 if __name__ == "__main__":
     main()
