@@ -256,14 +256,11 @@ def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: 
         logger.error("🚨 WARNING: One or more readings in the batch failed verification.")
 
 
-
-# --- NEW MAIN FUNCTION ---
 def main():
     parser = argparse.ArgumentParser(description="A smart client to purchase data from the Sensōra Network.")
     parser.add_argument("wif", help="The WIF (Wallet Import Format) private key of the consumer.")
     parser.add_argument("--type", type=int, default=1, help="The data type code to purchase (default: 1 for Temp/Humid).")
     
-    # Add a mutually exclusive group for single vs. batch purchase
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--latest", action="store_true", help="Purchase the single latest reading (default behavior).")
     group.add_argument("--batch", action="store_true", help="Purchase a batch of historical readings.")
@@ -273,11 +270,9 @@ def main():
 
     args = parser.parse_args()
 
-    # Validate arguments
     if args.batch and (not args.start or not args.end):
         parser.error("--start and --end are required when using --batch.")
 
-    # Load the wallet
     try:
         consumer_priv_key = PrivateKey(args.wif)
         logger.info(f"Consumer wallet loaded: {consumer_priv_key.public_key().address()}")
@@ -285,20 +280,18 @@ def main():
         logger.exception("Invalid consumer WIF provided.")
         sys.exit(1)
 
-    # Discover the best sensor
     logger.info(f"Searching for the best sensor offering data type '{args.type}'...")
     sensor = discover_sensor(data_type=args.type)
     if not sensor:
         logger.error("Could not find a suitable sensor. Exiting.")
         sys.exit(1)
 
-    # --- Decide which purchase flow to execute ---
     if args.batch:
         logger.info("--- Initiating Batch Purchase Flow ---")
         try:
-            # Convert string dates to Unix timestamps
             start_ts = int(datetime.datetime.strptime(args.start, "%Y-%m-%d").timestamp())
             end_ts = int(datetime.datetime.strptime(args.end, "%Y-%m-%d").timestamp())
+            # The purchase_batch function already contains the confirmation prompt
             purchase_batch(sensor, start_ts, end_ts, consumer_priv_key)
         except ValueError:
             logger.error("Invalid date format. Please use YYYY-MM-DD.")
@@ -306,14 +299,27 @@ def main():
     else:
         logger.info("--- Initiating Single Reading Purchase Flow ---")
         try:
-            # Get the latest reading ID from the discovered sensor's /price endpoint
+            # --- START OF RESTORED CONFIRMATION LOGIC ---
             price_url = f"http://[{sensor['ipv6_address']}]:{sensor['port']}/price"
-            reading_id_to_buy = requests.get(price_url, timeout=5).json()['current_reading_id']
-            logger.info(f"Found latest reading ID to purchase: {reading_id_to_buy}")
-            # The purchase_reading function already has a confirmation step
+            price_info = requests.get(price_url, timeout=5).json()
+            reading_id_to_buy = price_info['current_reading_id']
+            price_sats = price_info['price_sats']
+
+            logger.info(f"Sensor selected: {sensor['ipv6_address']}:{sensor['port']}")
+            logger.info(f"    Price: {price_sats} sats")
+            logger.info(f"    Reading ID: {reading_id_to_buy}")
+
+            confirm = input("Proceed with purchase? [y/N]: ")
+            if confirm.lower() != 'y':
+                logger.info("Purchase cancelled by user.")
+                sys.exit(0)
+            
+            # --- END OF RESTORED CONFIRMATION LOGIC ---
+
+            # Now call the purchase function
             purchase_reading(sensor, reading_id_to_buy, consumer_priv_key)
         except Exception as e:
-            logger.error(f"Could not get latest reading ID from discovered sensor: {e}")
+            logger.error(f"Could not get purchase details from discovered sensor: {e}")
             sys.exit(1)
 
 if __name__ == "__main__":
