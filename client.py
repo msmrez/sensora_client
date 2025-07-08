@@ -250,17 +250,16 @@ def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: 
 
 def main():
     parser = argparse.ArgumentParser(description="A smart client to purchase data from the Sensōra Network.")
+    # ... (the argparse setup is correct) ...
     parser.add_argument("wif", help="The WIF (Wallet Import Format) private key of the consumer.")
     parser.add_argument("--type", type=int, default=1, help="The data type code to purchase (default: 1 for Temp/Humid).")
-    
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--latest", action="store_true", help="Purchase the single latest reading (default behavior).")
     group.add_argument("--batch", action="store_true", help="Purchase a batch of historical readings.")
-
     parser.add_argument("--start", help="Start date for batch purchase (YYYY-MM-DD). Required with --batch.")
     parser.add_argument("--end", help="End date for batch purchase (YYYY-MM-DD). Required with --batch.")
-
     args = parser.parse_args()
+
 
     if args.batch and (not args.start or not args.end):
         parser.error("--start and --end are required when using --batch.")
@@ -291,7 +290,7 @@ def main():
     else:
         logger.info("--- Initiating Single Reading Purchase Flow ---")
         try:
-            # --- START OF RESTORED CONFIRMATION LOGIC ---
+            # Get purchase details for confirmation
             price_url = f"http://[{sensor['ipv6_address']}]:{sensor['port']}/price"
             price_info = requests.get(price_url, timeout=5).json()
             reading_id_to_buy = price_info['current_reading_id']
@@ -305,11 +304,9 @@ def main():
             if confirm.lower() != 'y':
                 logger.info("Purchase cancelled by user.")
                 sys.exit(0)
-            
-            # --- END OF RESTORED CONFIRMATION LOGIC ---
 
-            # Now call the purchase function
             purchase_reading(sensor, reading_id_to_buy, consumer_priv_key)
+
         except Exception as e:
             logger.error(f"Could not get purchase details from discovered sensor: {e}")
             sys.exit(1)
