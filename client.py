@@ -39,24 +39,50 @@ def discover_sensor(data_type: int = 1):
         return None
 
 def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKey):
-    # ... (code to get sensor info and broadcast the payment) ...
+    """
+    Handles the entire single reading purchase flow: get address, pay, claim, fetch, and verify.
+    """
+    sensor_ipv6 = sensor.get('ipv6_address')
+    sensor_port = sensor.get('port')
+    sensor_api_base = f"http://[{sensor_ipv6}]:{sensor_port}"
+
+    # --- START OF MISSING LOGIC ---
+
+    # 1. Get final price and payment address from the sensor
+    try:
+        price_response = requests.get(f"{sensor_api_base}/price", timeout=5).json()
+        device_payment_address = price_response['payment_address']
+        price_sats = price_response['price_sats']
+    except Exception as e:
+        logger.error(f"Failed to get final price from sensor {sensor_ipv6}: {e}")
+        return
+
+    # 2. Construct and broadcast the payment transaction
+    op_return_data = f"SENSORA_PAY:{reading_id}".encode('utf-8')
+    payment_tx = bsv_utils.create_payment_transaction(consumer_priv_key, device_payment_address, price_sats, op_return_data)
+    if not payment_tx:
+        logger.error("Failed to create payment transaction.")
+        return
+
+    payment_txid = bsv_utils.broadcast_transaction(payment_tx.raw())
+    if not payment_txid:
+        logger.error("Failed to broadcast payment transaction.")
+        return
+
+    # --- END OF MISSING LOGIC ---
     
     logger.info(f"Payment broadcasted: {payment_txid}. Waiting a few seconds to claim...")
     time.sleep(10)
     
-    # 3. Claim token - with NEW, ROBUST error handling
+    # 3. Claim the token
     try:
         claim_url = f"{sensor_api_base}/claim_reading/{reading_id}"
         claim_payload = {"payment_txid": payment_txid}
         
-        # Make the request and immediately check the HTTP status code
         response = requests.post(claim_url, json=claim_payload, timeout=10)
-        response.raise_for_status() # This will raise an exception for errors (4xx or 5xx)
-
-        # If we get here, the request was successful (2xx status code). Now we can parse the JSON.
+        response.raise_for_status()
         claim_response = response.json()
         
-        # Defensive check for the key before accessing it
         if 'access_token' not in claim_response:
             logger.error("Claim successful, but agent's response is missing 'access_token'.")
             logger.error(f"Agent Response: {claim_response}")
@@ -67,10 +93,8 @@ def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKe
         logger.info(f"Token claimed successfully: {access_token[:8]}...")
 
     except requests.exceptions.HTTPError as e:
-        # This block will now catch errors like 402 Payment Required, 404 Not Found, etc.
         logger.error(f"Failed to claim token. Agent responded with error: {e.response.status_code} {e.response.reason}")
         try:
-            # Try to print the JSON error message from the agent
             logger.error(f"  Agent's Message: {e.response.json()}")
         except json.JSONDecodeError:
             logger.error(f"  Agent's Response (non-JSON): {e.response.text}")
@@ -78,16 +102,15 @@ def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKe
     except Exception as e:
         logger.exception(f"An unexpected error occurred while claiming the token: {e}")
         return
-    # 4. Fetch data with token
+        
+    # 4. Fetch data with the token
     try:
         fetch_url = f"{sensor_api_base}{data_endpoint}?token={access_token}"
         data_response = requests.get(fetch_url, timeout=10)
         data_response.raise_for_status()
-        
         purchased_data_payload = data_response.json()
         
         print("\n--- PURCHASED DATA ---")
-        # Print a cleaner version of the data for the user
         print(json.dumps({
             "timestamp": purchased_data_payload.get('timestamp'),
             "sensor_values": purchased_data_payload.get('sensor_values')
@@ -95,19 +118,15 @@ def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKe
         print("----------------------")
         logger.info("Data successfully purchased and retrieved!")
 
-        # 5. --- NEW VERIFICATION STEP ---
-        # Use the correct key from your agent's API response
+        # 5. Verify the data
         proof_txid = purchased_data_payload.get('onchain_proof_txid')
         if proof_txid:
-            # Pass the whole payload to the verification function
             verify_data_integrity(purchased_data_payload, proof_txid)
         else:
             logger.warning("Agent did not provide a proof_txid. Cannot verify data integrity.")
 
     except Exception as e:
         logger.exception(f"Failed to fetch or verify data: {e}")
-
-
 
 def verify_data_integrity(purchased_data: dict, proof_txid: str) -> bool:
     """Verifies the integrity of purchased data against its on-chain proof."""
