@@ -1,5 +1,6 @@
 # sensora_client/client.py
 
+import argparse
 import requests
 import time
 import sys
@@ -18,8 +19,7 @@ logger = logging.getLogger(__name__)
 def discover_sensor(data_type: int = 1):
     """Finds a sensor using the Registry API."""
     try:
-        search_url = f"{config.REGISTRY_API_URL}/api/v1/sensors/search?data_type={data_type}"
-        logger.info(f"Discovering sensors from registry: {search_url}")
+        search_url = f"{config.REGISTRY_API_URL}/api/v1/sensors/search?data_type={data_type}&sort=reputation"        logger.info(f"Discovering sensors from registry: {search_url}")
         response = requests.get(search_url, timeout=10)
         response.raise_for_status()
         sensors = response.json()
@@ -151,38 +151,59 @@ def verify_data_integrity(purchased_data: dict, proof_txid: str) -> bool:
         return False
 
 
+
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python client.py <YOUR_CONSUMER_WIF> [--reading-id <ID>] [--data-type <TYPE>]")
-        sys.exit(1)
-        
-    consumer_wif = sys.argv[1]
+    # 1. Set up the argument parser
+    parser = argparse.ArgumentParser(description="A smart client to purchase data from the Sensōra Network.")
+    parser.add_argument("wif", help="The WIF (Wallet Import Format) private key of the consumer.")
+    parser.add_argument("--type", type=int, default=1, help="The data type code to purchase (default: 1 for Temp/Humid).")
     
+    args = parser.parse_args()
+    
+    # 2. Load the wallet
     try:
-        consumer_priv_key = PrivateKey(consumer_wif)
+        consumer_priv_key = PrivateKey(args.wif)
         logger.info(f"Consumer wallet loaded: {consumer_priv_key.public_key().address()}")
     except Exception as e:
         logger.error(f"Invalid consumer WIF provided: {e}")
         sys.exit(1)
 
-    # Discover a sensor offering Temp/Humid data (type 1)
-    # This part is now automated
-    sensor_to_buy_from = discover_sensor(data_type=1)
+    # 3. Discover the best sensor for the requested data type
+    logger.info(f"Searching for the best sensor offering data type '{args.type}'...")
+    sensor_to_buy_from = discover_sensor(data_type=args.type)
     
     if not sensor_to_buy_from:
         logger.error("Could not find a suitable sensor. Exiting.")
         sys.exit(1)
         
-    # Get the latest reading ID from the discovered sensor's /price endpoint
+    # 4. Get the latest reading ID and display info for confirmation
     try:
-        price_url = f"http://[{sensor_to_buy_from['ipv6_address']}]:{sensor_to_buy_from['port']}/price"
-        reading_id_to_buy = requests.get(price_url, timeout=5).json()['current_reading_id']
-        logger.info(f"Found latest reading ID to purchase: {reading_id_to_buy}")
+        sensor_ip = sensor_to_buy_from['ipv6_address']
+        sensor_port = sensor_to_buy_from['port']
+        price_url = f"http://[{sensor_ip}]:{sensor_port}/price"
+        
+        price_info = requests.get(price_url, timeout=5).json()
+        reading_id_to_buy = price_info['current_reading_id']
+        price_sats = price_info['price_sats']
+        
+        logger.info(f"Sensor selected: {sensor_ip}:{sensor_port}")
+        logger.info(f"    Reputation: Uptime {sensor_to_buy_from['uptime_percentage']:.2f}%, Stamping {sensor_to_buy_from['stamp_success_rate']:.2f}%")
+        logger.info(f"    Price: {price_sats} sats")
+        logger.info(f"    Reading ID: {reading_id_to_buy}")
+
+        # 5. Ask for user confirmation before spending funds
+        confirm = input("Proceed with purchase? [y/N]: ")
+        if confirm.lower() != 'y':
+            logger.info("Purchase cancelled by user.")
+            sys.exit(0)
+
     except Exception as e:
-        logger.error(f"Could not get latest reading ID from discovered sensor: {e}")
+        logger.error(f"Could not get purchase details from the selected sensor: {e}")
         sys.exit(1)
         
+    # 6. Proceed with the purchase
     purchase_reading(sensor_to_buy_from, reading_id_to_buy, consumer_priv_key)
 
+    
 if __name__ == "__main__":
     main()
