@@ -86,14 +86,68 @@ def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKe
     try:
         fetch_url = f"{sensor_api_base}{data_endpoint}?token={access_token}"
         data_response = requests.get(fetch_url, timeout=10)
-        logger.info(f"Data fetch response status: {data_response.status_code}")
-        data = data_response.json()
+        data_response.raise_for_status()
+        
+        purchased_data_payload = data_response.json()
+        
         print("\n--- PURCHASED DATA ---")
-        print(json.dumps(data, indent=2))
+        # Print a cleaner version of the data for the user
+        print(json.dumps({
+            "timestamp": purchased_data_payload.get('timestamp'),
+            "sensor_values": purchased_data_payload.get('sensor_values')
+        }, indent=2))
         print("----------------------")
         logger.info("Data successfully purchased and retrieved!")
+
+        # 5. --- NEW VERIFICATION STEP ---
+        # Use the correct key from your agent's API response
+        proof_txid = purchased_data_payload.get('onchain_proof_txid')
+        if proof_txid:
+            # Pass the whole payload to the verification function
+            verify_data_integrity(purchased_data_payload, proof_txid)
+        else:
+            logger.warning("Agent did not provide a proof_txid. Cannot verify data integrity.")
+
     except Exception as e:
-        logger.exception(f"Failed to fetch data with token: {e}")
+        logger.exception(f"Failed to fetch or verify data: {e}")
+
+
+
+def verify_data_integrity(purchased_data: dict, proof_txid: str) -> bool:
+    """Verifies the integrity of purchased data against its on-chain proof."""
+    logger.info(f"Starting verification process for proof TXID: {proof_txid}")
+    
+    # 1. Recreate the exact string that was originally hashed by the agent
+    # The agent's fetch_data response nests the values inside 'sensor_values'
+    timestamp = purchased_data['timestamp']
+    temp_val, humid_val = purchased_data['sensor_values']
+    
+    # Ensure precision matches the agent's hashing function (e.g., 1 decimal place)
+    temp_str = f"{temp_val:.1f}"
+    humidity_str = f"{humid_val:.1f}"
+    
+    data_to_hash_str = f"{timestamp}:{temp_str}:{humidity_str}"
+    local_hash = hashlib.sha256(data_to_hash_str.encode('utf-8')).digest()
+    
+    logger.info(f"Locally calculated hash: {local_hash.hex()}")
+    
+    # 2. Get the original hash from the blockchain
+    onchain_hash = bsv_utils.get_onchain_proof_hash(proof_txid)
+    
+    if not onchain_hash:
+        logger.error("Could not retrieve the original data hash from the blockchain.")
+        return False
+        
+    logger.info(f"On-chain hash found:   {onchain_hash.hex()}")
+    
+    # 3. Compare the hashes
+    if local_hash == onchain_hash:
+        logger.info("✅ SUCCESS: Data is authentic. Hashes match!")
+        return True
+    else:
+        logger.error("🚨 FAILURE: Data tampering detected! Hashes DO NOT match.")
+        return False
+
 
 def main():
     if len(sys.argv) < 2:
