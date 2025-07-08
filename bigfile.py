@@ -134,7 +134,7 @@ def main():
     }
     manifest_bytes = json.dumps(manifest).encode('utf-8')
     
-    UPFILE_V2_PREFIX = b"UPFV2"
+    UPFILE_V2_PREFIX = b"upfile "
     script_parts = [
         b'\x00\x6a', # OP_FALSE OP_RETURN
         create_pushdata(UPFILE_V2_PREFIX),
