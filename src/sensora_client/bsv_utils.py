@@ -7,7 +7,8 @@ import struct # <--- ADD THIS IMPORT
 from bsvlib import PrivateKey, PublicKey, TxOutput, TxInput, Unspent, Transaction
 from bsvlib.script import Script
 from bsvlib.script.type import P2pkhScriptType
-
+import hashlib
+import requests
 from . import config
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,49 @@ def broadcast_transaction(raw_tx_hex: str) -> str | None:
     except Exception as e:
         logger.exception(f"Error broadcasting consumer TX: {e}")
         return None
+
+
+def get_onchain_proof_hash(proof_txid: str) -> bytes | None:
+    """Fetches a SENSORA_PROOF tx and extracts the data hash from its OP_RETURN."""
+    try:
+        url = f"https://api.bitails.io/tx/{proof_txid}"
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        tx_data = response.json()
+        
+        for output in tx_data.get('outputs', []):
+            script_hex = output.get('script', '')
+            # Check for OP_FALSE OP_RETURN
+            if not script_hex.startswith("006a"):
+                continue
+
+            # Manually parse the payload from the script hex
+            script_bytes = bytes.fromhex(script_hex)
+            opcode = script_bytes[2]
+            
+            data_start_index = 0
+            if 0x01 <= opcode <= 0x4b: data_start_index = 3
+            elif opcode == 0x4c: data_start_index = 4
+            elif opcode == 0x4d: data_start_index = 5
+            else: continue # Unsupported push opcode
+            
+            payload = script_bytes[data_start_index:]
+            
+            # Now, check if this payload is a SENSORA_PROOF
+            # Make sure this prefix matches your agent's config
+            proof_prefix = b'SENSORA_PROOF' 
+            if payload.startswith(proof_prefix):
+                # The data hash is the last 32 bytes of the payload
+                # Let's verify the expected length based on the protocol definition
+                # Prefix(13) + Ver(1) + Type(1) + DevID(16) + ReadID(8) + DataType(2) + Hash(32) = 73 bytes
+                if len(payload) == 73:
+                    return payload[-32:] # Return the 32-byte hash
+                
+        return None # No valid proof found in any output
+    except Exception:
+        logger.exception(f"Error fetching or parsing proof transaction {proof_txid}")
+        return None
+
 def create_payment_transaction(consumer_priv_key: PrivateKey, device_payment_address: str, price_sats: int, op_return_data: bytes) -> Transaction | None:
     """Constructs the full payment transaction for the consumer."""
     try:
