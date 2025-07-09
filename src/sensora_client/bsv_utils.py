@@ -233,11 +233,6 @@ def create_payment_transaction(consumer_priv_key: PrivateKey, device_payment_add
     
     op_return_output = TxOutput(out=op_return_script, satoshi=0)
     
-    # --- START FINAL CORRECTION ---
-    # The Transaction object's tx_inputs parameter expects TxInput objects,
-    # but the add_inputs method is designed to take Unspent objects directly.
-    # We will initialize an empty transaction and then use the .add_inputs() method.
-
     tx = Transaction(tx_outputs=[payment_output, op_return_output], fee_rate=config.BSV_FEE_SATOSHIS_PER_BYTE_CONSUMER)
     
     # The .add_inputs() method is specifically designed to handle a list of Unspent objects.

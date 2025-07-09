@@ -229,22 +229,46 @@ def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: 
 
     # 4. Claim Batch and Fetch Data
     try:
+        logger.info("Attempting to claim batch with the agent...")
         claim_url = f"{sensor_api_base}/batch/claim"
         claim_payload = {"batch_id": batch_id, "payment_txid": payment_txid}
-        claim_response = requests.post(claim_url, json=claim_payload, timeout=10).json()
-        access_token = claim_response['access_token']
-        data_endpoint = claim_response['data_endpoint']
+        
+        # Make the request but do not call .json() immediately.
+        claim_response = requests.post(claim_url, json=claim_payload, timeout=10)
+        
+        # --- THIS IS THE NEW, ROBUST CHECK ---
+        # Check the status code BEFORE trying to parse the body.
+        if claim_response.status_code != 201: # Agent should respond with 201 Created
+            logger.error(f"Batch claim failed. Agent responded with status: {claim_response.status_code} {claim_response.reason}")
+            try:
+                # Try to print the JSON error from the agent for more details
+                logger.error(f"  Agent's Error Message: {claim_response.json()}")
+            except requests.exceptions.JSONDecodeError:
+                # If the error response isn't JSON, just print the raw text
+                logger.error(f"  Agent's Raw Response: {claim_response.text}")
+            return # Stop the process
+        # --- END OF NEW CHECK ---
+
+        # If we get here, the claim was successful. Now we can safely parse the JSON.
+        claim_data = claim_response.json()
+        access_token = claim_data['access_token']
+        data_endpoint = claim_data['data_endpoint']
         logger.info("Batch claim successful. Fetching data...")
 
+        # The rest of the logic is now much more likely to succeed.
         fetch_url = f"{sensor_api_base}{data_endpoint}?token={access_token}"
         data_response = requests.get(fetch_url, timeout=30)
-        data_response.raise_for_status()
+        data_response.raise_for_status() # This is good for catching the 404 on the fetch step
         batch_data = data_response.json()
         
         logger.info(f"Successfully downloaded batch of {len(batch_data)} readings.")
 
+    except requests.exceptions.HTTPError as e:
+        # This will now clearly show if the error came from the fetch step
+        logger.error(f"Failed during data fetch. Server responded with: {e.response.status_code} {e.response.reason}")
+        return
     except Exception as e:
-        logger.exception(f"Failed to claim or fetch batch data: {e}")
+        logger.exception(f"An unexpected error occurred during the claim or fetch process: {e}")
         return
     
     # 5. Verify Each Reading in the Batch
