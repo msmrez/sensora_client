@@ -150,9 +150,14 @@ def create_payment_transaction(consumer_priv_key: PrivateKey, device_payment_add
     try:
         script_bytes_list = [b'\x00', b'\x6a'] # OP_FALSE OP_RETURN
         data_len = len(op_return_data)
-        if data_len > 75: # Simple client only handles single-byte pushdata for now
-            logger.error(f"OP_RETURN data too large ({data_len} bytes) for this simple client.")
-            return None
+        if op_return_data:
+        # --- THIS IS THE CORRECTED CHECK ---
+            if len(op_return_data) > config.OP_RETURN_MAX_SIZE:
+                logger.error(f"OP_RETURN data is too large ({len(op_return_data)} bytes). Limit is {OP_RETURN_MAX_SIZE} bytes.")
+                return None
+        
+        # Add the OP_RETURN output
+        tx.add_output(OpReturn(op_return_data))
         script_bytes_list.append(bytes([data_len]))
         script_bytes_list.append(op_return_data)
         op_return_script = Script(b''.join(script_bytes_list))
