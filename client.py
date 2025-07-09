@@ -135,7 +135,8 @@ def verify_data_integrity(purchased_data: dict, proof_txid: str) -> bool:
     # 1. Recreate the exact string that was originally hashed by the agent
     # The agent's fetch_data response nests the values inside 'sensor_values'
     timestamp = purchased_data['timestamp']
-    temp_val, humid_val = purchased_data['sensor_values']
+    temp_val = purchased_data.get('value_temp') # Use .get() for safety
+    humid_val = purchased_data.get('value_humid')
     
     # Ensure precision matches the agent's hashing function (e.g., 1 decimal place)
     temp_str = f"{temp_val:.1f}"
