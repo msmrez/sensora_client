@@ -30,7 +30,6 @@ def discover_sensor(data_type: int = 1):
             logger.warning("No online sensors found offering the requested data type.")
             return None
         
-        # For this MVP, just select the first sensor found
         selected_sensor = sensors[0]
         logger.info(f"Discovered sensor: {selected_sensor.get('device_id')}")
         return selected_sensor
@@ -68,8 +67,6 @@ def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKe
     if not payment_txid:
         logger.error("Failed to broadcast payment transaction.")
         return
-
-    # --- END OF MISSING LOGIC ---
     
     logger.info(f"Payment broadcasted: {payment_txid}. Waiting a few seconds to claim...")
     time.sleep(10)
@@ -272,7 +269,6 @@ def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: 
         # Make the request but do not call .json() immediately.
         claim_response = requests.post(claim_url, json=claim_payload, timeout=10)
         
-        # --- THIS IS THE NEW, ROBUST CHECK ---
         # Check the status code BEFORE trying to parse the body.
         if claim_response.status_code != 201: # Agent should respond with 201 Created
             logger.error(f"Batch claim failed. Agent responded with status: {claim_response.status_code} {claim_response.reason}")
@@ -283,7 +279,6 @@ def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: 
                 # If the error response isn't JSON, just print the raw text
                 logger.error(f"  Agent's Raw Response: {claim_response.text}")
             return # Stop the process
-        # --- END OF NEW CHECK ---
 
         # If we get here, the claim was successful. Now we can safely parse the JSON.
         claim_data = claim_response.json()
@@ -326,10 +321,8 @@ def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: 
     else:
         logger.error("🚨 WARNING: One or more readings in the batch failed verification.")
 
-
 def main():
     parser = argparse.ArgumentParser(description="A smart client to purchase data from the Sensōra Network.")
-    # ... (the argparse setup is correct) ...
     parser.add_argument("wif", help="The WIF (Wallet Import Format) private key of the consumer.")
     parser.add_argument("--type", type=int, default=1, help="The data type code to purchase (default: 1 for Temp/Humid).")
     group = parser.add_mutually_exclusive_group()
@@ -338,7 +331,6 @@ def main():
     parser.add_argument("--start", help="Start date for batch purchase (YYYY-MM-DD). Required with --batch.")
     parser.add_argument("--end", help="End date for batch purchase (YYYY-MM-DD). Required with --batch.")
     args = parser.parse_args()
-
 
     if args.batch and (not args.start or not args.end):
         parser.error("--start and --end are required when using --batch.")
@@ -356,26 +348,46 @@ def main():
         logger.error("Could not find a suitable sensor. Exiting.")
         sys.exit(1)
 
+    # --- NEW: Extract Rich Service Details (Do this once, for both flows) ---
+    service_details = None
+    for service in sensor.get('services_offered', []):
+        if service.get('data_type_code') == args.type:
+            service_details = service
+            break
+    
+    if not service_details:
+        logger.error(f"The selected sensor does not appear to offer data type {args.type} in its latest advertisement. Exiting.")
+        sys.exit(1)
+        
+    service_name = service_details.get('name', f"Data Type {args.type}")
+    service_desc = service_details.get('description', 'N/A')
+    # --- END OF NEW LOGIC ---
+
+    # Display a consistent header for both flows
+    logger.info(f"Sensor selected: {sensor['ipv6_address']}:{sensor['port']}")
+    logger.info(f"    Service: '{service_name}' ({service_desc})")
+    logger.info(f"    Reputation: Uptime {sensor.get('uptime_percentage', 100):.2f}%, Stamping {sensor.get('stamp_success_rate', 100):.2f}%")
+
     if args.batch:
         logger.info("--- Initiating Batch Purchase Flow ---")
         try:
             start_ts = int(datetime.datetime.strptime(args.start, "%Y-%m-%d").timestamp())
             end_ts = int(datetime.datetime.strptime(args.end, "%Y-%m-%d").timestamp())
-            # The purchase_batch function already contains the confirmation prompt
+            # The purchase_batch function already contains its own confirmation prompt,
+            # so we just call it directly.
             purchase_batch(sensor, start_ts, end_ts, consumer_priv_key)
         except ValueError:
             logger.error("Invalid date format. Please use YYYY-MM-DD.")
             sys.exit(1)
-    else:
+    else: # Default to latest single reading
         logger.info("--- Initiating Single Reading Purchase Flow ---")
         try:
-            # Get purchase details for confirmation
             price_url = f"http://[{sensor['ipv6_address']}]:{sensor['port']}/price"
             price_info = requests.get(price_url, timeout=5).json()
             reading_id_to_buy = price_info['current_reading_id']
             price_sats = price_info['price_sats']
 
-            logger.info(f"Sensor selected: {sensor['ipv6_address']}:{sensor['port']}")
+            # Display the quote and ask for confirmation
             logger.info(f"    Price: {price_sats} sats")
             logger.info(f"    Reading ID: {reading_id_to_buy}")
 
@@ -384,6 +396,7 @@ def main():
                 logger.info("Purchase cancelled by user.")
                 sys.exit(0)
 
+            # Pass all necessary info to the purchase function
             purchase_reading(sensor, reading_id_to_buy, consumer_priv_key)
 
         except Exception as e:
