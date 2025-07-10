@@ -128,13 +128,6 @@ def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKe
     except Exception as e:
         logger.exception(f"Failed to fetch or verify data: {e}")
 
-# In sensora_client/client.py
-
-import hashlib
-import logging
-from . import bsv_utils # Assuming your bsv_utils is imported
-
-logger = logging.getLogger(__name__)
 
 def verify_data_integrity(purchased_data: dict, proof_txid: str) -> bool:
     """
@@ -205,7 +198,7 @@ def verify_data_integrity(purchased_data: dict, proof_txid: str) -> bool:
     else:
         logger.error("🚨 FAILURE: Data tampering detected! Hashes DO NOT match.")
         return False
-        
+
 # This is the full batch purchase function we designed earlier.
 def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: PrivateKey):
     """
