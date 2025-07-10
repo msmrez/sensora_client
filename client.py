@@ -128,42 +128,84 @@ def purchase_reading(sensor: dict, reading_id: str, consumer_priv_key: PrivateKe
     except Exception as e:
         logger.exception(f"Failed to fetch or verify data: {e}")
 
+# In sensora_client/client.py
+
+import hashlib
+import logging
+from . import bsv_utils # Assuming your bsv_utils is imported
+
+logger = logging.getLogger(__name__)
+
 def verify_data_integrity(purchased_data: dict, proof_txid: str) -> bool:
-    """Verifies the integrity of purchased data against its on-chain proof."""
+    """
+    Verifies the integrity of a single reading against its on-chain proof.
+    This version correctly handles both single reading and batch reading data structures.
+    """
     logger.info(f"Starting verification process for proof TXID: {proof_txid}")
-    
-    # 1. Recreate the exact string that was originally hashed by the agent
-    # The agent's fetch_data response nests the values inside 'sensor_values'
-    timestamp = purchased_data['timestamp']
-    temp_val = purchased_data.get('value_temp') # Use .get() for safety
-    humid_val = purchased_data.get('value_humid')
-    
-    # Ensure precision matches the agent's hashing function (e.g., 1 decimal place)
-    temp_str = f"{temp_val:.1f}"
-    humidity_str = f"{humid_val:.1f}"
+
+    # Step 1: Extract the timestamp and sensor values correctly,
+    # regardless of the data structure.
+    timestamp = purchased_data.get('timestamp')
+    if not timestamp:
+        logger.error("Verification failed: Data is missing the 'timestamp' key.")
+        return False
+
+    temp_val = None
+    humid_val = None
+
+    # This is the new logic to handle both formats
+    if 'sensor_values' in purchased_data and isinstance(purchased_data['sensor_values'], list) and len(purchased_data['sensor_values']) == 2:
+        # This is from the single /fetch_data endpoint, which returns a list.
+        logger.debug("Parsing single-fetch data structure with 'sensor_values' key.")
+        temp_val, humid_val = purchased_data['sensor_values']
+
+    elif 'value_temp' in purchased_data and 'value_humid' in purchased_data:
+        # This is from the /batch/fetch endpoint, which returns raw database rows.
+        logger.debug("Parsing batch-fetch data structure with 'value_temp'/'value_humid' keys.")
+        temp_val = purchased_data.get('value_temp')
+        humid_val = purchased_data.get('value_humid')
+        
+    else:
+        logger.error("Verification failed: Data is in an unknown format. Could not find sensor values.")
+        return False
+
+    # Check if we successfully extracted the values
+    if temp_val is None or humid_val is None:
+        logger.error("Verification failed: Temperature or humidity value is missing after parsing.")
+        return False
+
+    # Step 2: Recreate the exact string that was originally hashed by the agent.
+    # The f-string formatting will now work because temp_val and humid_val are guaranteed to be numbers.
+    try:
+        # Ensure precision matches the agent's hashing function (e.g., 1 decimal place)
+        temp_str = f"{temp_val:.1f}"
+        humidity_str = f"{humid_val:.1f}"
+    except (ValueError, TypeError):
+        logger.error(f"Verification failed: Could not format sensor values. Temp: {temp_val}, Humid: {humid_val}")
+        return False
     
     data_to_hash_str = f"{timestamp}:{temp_str}:{humidity_str}"
     local_hash = hashlib.sha256(data_to_hash_str.encode('utf-8')).digest()
     
     logger.info(f"Locally calculated hash: {local_hash.hex()}")
     
-    # 2. Get the original hash from the blockchain
+    # Step 3: Get the original hash from the blockchain.
     onchain_hash = bsv_utils.get_onchain_proof_hash(proof_txid)
     
     if not onchain_hash:
-        logger.error("Could not retrieve the original data hash from the blockchain.")
+        logger.error("Verification failed: Could not retrieve the original data hash from the blockchain.")
         return False
         
     logger.info(f"On-chain hash found:   {onchain_hash.hex()}")
     
-    # 3. Compare the hashes
+    # Step 4: Compare the hashes.
     if local_hash == onchain_hash:
         logger.info("✅ SUCCESS: Data is authentic. Hashes match!")
         return True
     else:
         logger.error("🚨 FAILURE: Data tampering detected! Hashes DO NOT match.")
         return False
-
+        
 # This is the full batch purchase function we designed earlier.
 def purchase_batch(sensor: dict, start_ts: int, end_ts: int, consumer_priv_key: PrivateKey):
     """
