@@ -8,8 +8,8 @@ import datetime
 import json
 from bsvlib import PrivateKey
 
-from src.sensora_client import config
-from src.sensora_client.sensora_api import SensoraAPI
+from sensora_client.sensora_api import SensoraAPI
+from sensora_client import config, bsv_utils
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

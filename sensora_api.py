@@ -8,7 +8,7 @@ import hashlib
 from bsvlib import PrivateKey
 
 # We also need the bsv_utils from the original script
-from . import bsv_utils
+from sensora_client import bsv_utils
 
 logger = logging.getLogger(__name__)
 
