@@ -1,13 +1,29 @@
-# sensora_client/pyproject.toml
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "sensora_client"
 version = "0.1.0"
-description = "A client for discovering and purchasing data from the Sensora IoT marketplace."
+description = "A client library and CLI for the Sensora Network."
 readme = "README.md"
-requires-python = ">=3.8"
-
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+# Add your dependencies here. This should match your requirements.txt
 dependencies = [
     "requests",
     "bsvlib",
+    "python-dotenv"
 ]
+
+[project.urls]
+"Homepage" = "https://github.com/msmrez/sensora"
+"Bug Tracker" = "https://github.com/msmrez/sensora_client/issues"
+
+# --- THIS IS THE MOST CRITICAL PART FOR THE SRC LAYOUT ---
+[tool.setuptools.packages.find]
+where = ["src"]
